@@ -1,0 +1,5 @@
+assets: /hdd/zijianwang/openpi/third_party/LIBERO-PRO/libero/libero/./assets
+bddl_files: /hdd/zijianwang/openpi/third_party/LIBERO-PRO/libero/libero/./bddl_files
+benchmark_root: /hdd/zijianwang/openpi/third_party/LIBERO-PRO/libero/libero
+datasets: /hdd/zijianwang/openpi/third_party/LIBERO-PRO/libero/libero/../datasets
+init_states: /hdd/zijianwang/openpi/third_party/LIBERO-PRO/libero/libero/./init_files

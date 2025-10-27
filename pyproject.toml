@@ -37,6 +37,8 @@ dependencies = [
     "transformers==4.53.2",
     "rich>=14.0.0",
     "polars>=1.30.0",
+    "pip>=25.2",
+    "pandas>=2.2.3",
 ]
 
 
@@ -68,7 +70,9 @@ lerobot = { git = "https://github.com/huggingface/lerobot", rev = "0cf864870cf29
 dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = [
+    "packages/*"
+]
 
 [tool.ruff]
 line-length = 120
