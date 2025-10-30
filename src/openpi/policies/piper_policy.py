@@ -7,8 +7,8 @@ from openpi import transforms
 from openpi.models import model as _model
 
 
-def make_libero_example() -> dict:
-    """Creates a random input example for the Libero policy."""
+def make_piper_example() -> dict:
+    """Creates a random input example for the Piper policy."""
     return {
         "observation/state": np.random.rand(8),
         "observation/image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
@@ -27,7 +27,7 @@ def _parse_image(image) -> np.ndarray:
 
 
 @dataclasses.dataclass(frozen=True)
-class LiberoInputs(transforms.DataTransformFn):
+class PiperInputs(transforms.DataTransformFn):
     """
     This class is used to convert inputs to the model to the expected format. It is used for both training and inference.
 
@@ -79,15 +79,12 @@ class LiberoInputs(transforms.DataTransformFn):
         # stored in "prompt"; the output dict always needs to have the key "prompt").
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
-        
-        if "sampling_bs" in data:
-            inputs["sampling_bs"] = data["sampling_bs"]
 
         return inputs
 
 
 @dataclasses.dataclass(frozen=True)
-class LiberoOutputs(transforms.DataTransformFn):
+class PiperOutputs(transforms.DataTransformFn):
     """
     This class is used to convert outputs from the model back the the dataset specific format. It is
     used for inference only.
@@ -98,6 +95,6 @@ class LiberoOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # Only return the first N actions -- since we padded actions above to fit the model action
         # dimension, we need to now parse out the correct number of actions in the return dict.
-        # For Libero, we only return the first 7 actions (since the rest is padding).
+        # For Piper, we only return the first 7 actions (since the rest is padding).
         # For your own dataset, replace `7` with the action dimension of your dataset.
-        return {"actions": np.asarray(data["actions"][..., :7])}
+        return {"actions": np.asarray(data["actions"][:, :7])}

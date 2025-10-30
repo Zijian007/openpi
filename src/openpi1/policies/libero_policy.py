@@ -79,9 +79,6 @@ class LiberoInputs(transforms.DataTransformFn):
         # stored in "prompt"; the output dict always needs to have the key "prompt").
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
-        
-        if "sampling_bs" in data:
-            inputs["sampling_bs"] = data["sampling_bs"]
 
         return inputs
 
@@ -100,4 +97,4 @@ class LiberoOutputs(transforms.DataTransformFn):
         # dimension, we need to now parse out the correct number of actions in the return dict.
         # For Libero, we only return the first 7 actions (since the rest is padding).
         # For your own dataset, replace `7` with the action dimension of your dataset.
-        return {"actions": np.asarray(data["actions"][..., :7])}
+        return {"actions": np.asarray(data["actions"][:, :7])}

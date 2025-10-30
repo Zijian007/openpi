@@ -4,7 +4,7 @@ import dataclasses
 import enum
 import logging
 import pathlib
-from typing import Generic, TypeVar, Any
+from typing import Generic, TypeVar
 
 import augmax
 from flax import nnx
@@ -106,9 +106,6 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
-    # # batch sampling size
-    sampling_bs: Any = struct.field(pytree_node=False, default=1)
-
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
@@ -129,7 +126,6 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
-            sampling_bs=data.get("sampling_bs", 1),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -201,19 +197,6 @@ def preprocess_observation(
         else:
             out_masks[key] = jnp.asarray(observation.image_masks[key])
 
-    # --- ensure sampling_bs is a plain Python int (robust to jax/np/torch scalars) ---
-    raw_sampling = getattr(observation, "sampling_bs", 1)
-    if raw_sampling is None:
-        sampling_bs_val = 1
-    else:
-        # prefer .item() when available (jax/np/torch scalars), else cast to int
-        item = getattr(raw_sampling, "item", None)
-        try:
-            sampling_bs_val = int(item()) if callable(item) else int(raw_sampling)
-        except Exception:
-            # last resort: convert via str -> int
-            sampling_bs_val = int(str(raw_sampling))
-
     return Observation(
         images=out_images,
         image_masks=out_masks,
@@ -222,7 +205,6 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
-        sampling_bs=sampling_bs_val,
     )
 
 

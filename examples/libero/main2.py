@@ -93,7 +93,7 @@ def eval_libero(args: Args) -> None:
 
         # Start episodes
         task_episodes, task_successes = 0, 0
-        for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
+        for episode_idx in tqdm.tqdm(range(arvags.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment
@@ -149,9 +149,14 @@ def eval_libero(args: Args) -> None:
 
                         # Query model to get action
                         action_chunk = client.infer(element)["actions"]
-                        assert (
-                            len(action_chunk) >= args.replan_steps
-                        ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
+                        # print(f"action_chunk.shape: {action_chunk.shape}")
+                        # assert (
+                        #     len(action_chunk) >= args.replan_steps
+                        # ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
+                        assert action_chunk.shape[-2] >= args.replan_steps, (
+                        f"We want to replan every {args.replan_steps} steps, but policy only predicts {action_chunk.shape[-2]} steps."
+                    )
+                        action_chunk = action_chunk[0]
                         action_plan.extend(action_chunk[: args.replan_steps])
 
                     action = action_plan.popleft()

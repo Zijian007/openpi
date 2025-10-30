@@ -226,18 +226,12 @@ class Pi0(_model.BaseModel):
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
         dt = -1.0 / num_steps
-        # 修改batch_size为8，用于noise生成
-        noise_batch_size = observation.sampling_bs
-        std = 2.5 if noise_batch_size > 1 else 1.0
+        batch_size = observation.state.shape[0]
         if noise is None:
-            noise = jax.random.normal(rng, (noise_batch_size, self.action_horizon, self.action_dim)) * std
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
         # first fill KV cache with a forward pass of the prefix
-        # 先获取原始observation的prefix tokens，然后扩展到batch size=8
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        # 将prefix tokens扩展到batch size=8以匹配noise的batch size
-        prefix_tokens = jnp.repeat(prefix_tokens, noise_batch_size, axis=0)
-        prefix_mask = jnp.repeat(prefix_mask, noise_batch_size, axis=0)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
@@ -245,7 +239,7 @@ class Pi0(_model.BaseModel):
         def step(carry):
             x_t, time = carry
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, noise_batch_size)
+                observation, x_t, jnp.broadcast_to(time, batch_size)
             )
             # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
             # other
@@ -257,7 +251,7 @@ class Pi0(_model.BaseModel):
             # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
             full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
             assert full_attn_mask.shape == (
-                noise_batch_size,
+                batch_size,
                 suffix_tokens.shape[1],
                 prefix_tokens.shape[1] + suffix_tokens.shape[1],
             )

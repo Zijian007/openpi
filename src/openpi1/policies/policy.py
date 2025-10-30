@@ -94,18 +94,10 @@ class Policy(BasePolicy):
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
         model_time = time.monotonic() - start_time
-        
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         else:
-            # 随机选择一个batch索引
-            # batch_size = outputs["actions"].shape[0]
-            # random_idx = np.random.randint(0, batch_size)
-            # print("Randomly selected batch index:", random_idx)
-            # outputs = jax.tree.map(lambda x: np.asarray(x[random_idx, ...]), outputs)
-
-            # 直接输出所有 batch 的 action，不再随机选择一个 batch 索引
-            outputs = jax.tree.map(lambda x: np.asarray(x), outputs)
+            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
         outputs = self._output_transform(outputs)
         outputs["policy_timing"] = {
