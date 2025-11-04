@@ -108,6 +108,8 @@ class Observation(Generic[ArrayT]):
 
     # # batch sampling size
     sampling_bs: Any = struct.field(pytree_node=False, default=1)
+    # # sampling standard deviation
+    sampling_std: Any = struct.field(pytree_node=False, default=None)
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
@@ -130,6 +132,7 @@ class Observation(Generic[ArrayT]):
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
             sampling_bs=data.get("sampling_bs", 1),
+            sampling_std=data.get("sampling_std", None),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -214,6 +217,19 @@ def preprocess_observation(
             # last resort: convert via str -> int
             sampling_bs_val = int(str(raw_sampling))
 
+    # --- ensure sampling_std is a plain Python float or None (robust to jax/np/torch scalars) ---
+    raw_std = getattr(observation, "sampling_std", None)
+    if raw_std is None:
+        sampling_std_val = None
+    else:
+        # prefer .item() when available (jax/np/torch scalars), else cast to float
+        item = getattr(raw_std, "item", None)
+        try:
+            sampling_std_val = float(item()) if callable(item) else float(raw_std)
+        except Exception:
+            # last resort: convert via str -> float
+            sampling_std_val = float(str(raw_std))
+
     return Observation(
         images=out_images,
         image_masks=out_masks,
@@ -223,6 +239,7 @@ def preprocess_observation(
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
         sampling_bs=sampling_bs_val,
+        sampling_std=sampling_std_val,
     )
 
 

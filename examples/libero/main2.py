@@ -54,7 +54,7 @@ def eval_libero(args: Args) -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Create timestamped video output directory
-    video_out_dir = pathlib.Path(args.video_out_path) / timestamp / args.task_suite_name
+    video_out_dir = pathlib.Path(args.video_out_path) / f"{timestamp}_{args.task_suite_name}"
     video_out_dir.mkdir(parents=True, exist_ok=True)
     logging.info(f"Videos will be saved to: {video_out_dir}")
 
@@ -82,6 +82,8 @@ def eval_libero(args: Args) -> None:
     # Start evaluation
     total_episodes, total_successes = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+        # if task_id not in [1]:
+        #     continue
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -93,7 +95,7 @@ def eval_libero(args: Args) -> None:
 
         # Start episodes
         task_episodes, task_successes = 0, 0
-        for episode_idx in tqdm.tqdm(range(arvags.num_trials_per_task)):
+        for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment

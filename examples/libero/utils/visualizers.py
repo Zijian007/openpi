@@ -299,11 +299,11 @@ class ValueMapVisualizer:
             log_id = f"{curr_time.hour}:{curr_time.minute}:{curr_time.second}"
             save_path = os.path.join(self.save_dir, log_id + ".html")
             latest_save_path = os.path.join(self.save_dir, "latest.html")
-            print("** saving visualization to", save_path, "...")
+            # print("** saving visualization to", save_path, "...")
             fig.write_html(save_path)
-            print("** saving visualization to", latest_save_path, "...")
+            # print("** saving visualization to", latest_save_path, "...")
             fig.write_html(latest_save_path)
-            print(f"** save to {save_path}")
+            # print(f"** save to {save_path}")
         if show:
             fig.show()
 

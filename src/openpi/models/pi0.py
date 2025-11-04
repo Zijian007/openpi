@@ -228,7 +228,11 @@ class Pi0(_model.BaseModel):
         dt = -1.0 / num_steps
         # 修改batch_size为8，用于noise生成
         noise_batch_size = observation.sampling_bs
-        std = 2.5 if noise_batch_size > 1 else 1.0
+        # Use provided sampling_std or apply default logic
+        if observation.sampling_std is not None:
+            std = observation.sampling_std
+        else:
+            std = 2.5 if noise_batch_size > 1 else 1.0
         if noise is None:
             noise = jax.random.normal(rng, (noise_batch_size, self.action_horizon, self.action_dim)) * std
 

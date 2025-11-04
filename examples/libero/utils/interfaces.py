@@ -29,11 +29,11 @@ class LMP_interface:
         # self._env.workspace_bounds_max = robot_base_pos + np.array([0.8, 0.8, 1.0])
         # calculate size of each voxel (resolution)
         self._resolution = (self._env.workspace_bounds_max - self._env.workspace_bounds_min) / self._map_size
-        print("#" * 50)
-        print(f"## voxel resolution: {self._resolution}")
-        print("#" * 50)
-        print()
-        print()
+        # print("#" * 50)
+        # print(f"## voxel resolution: {self._resolution}")
+        # print("#" * 50)
+        # print()
+        # print()
 
     # ======================================================
     # == functions exposed to LLM
@@ -293,7 +293,7 @@ class LMP_interface:
             step_info["costmap"] = costmap
             step_info["raw_target_map"] = _affordance_map
 
-            all_nearby_voxels = self._calculate_nearby_voxel(start_pos, object_centric=object_centric)
+            all_nearby_voxels = self._calculate_nearby_voxel(start_pos, object_centric=object_centric) ##在里面定义half_size,目前为1voxel
             nearby_score = costmap[all_nearby_voxels[:, 0], all_nearby_voxels[:, 1], all_nearby_voxels[:, 2]]
             # Find the minimum cost voxel
             steepest_idx_top3 = np.argsort(nearby_score)[:1]
@@ -309,7 +309,8 @@ class LMP_interface:
                 for i, waypoint in enumerate(traj_world):
                     target_xyz, target_rotation, target_velocity, target_gripper = waypoint
                     target_pose = np.concatenate([target_xyz, target_rotation])
-                    wp_obs = self._env.apply_action(np.concatenate([target_pose, [target_gripper]]))
+                    wp_obs = self._env.apply_action(np.concatenate([target_pose, [target_gripper]])) 
+                    ## self._env.apply_action()在libero/libero/envs/env_wrapper.py中定义, 是个VoxRenderEnv
                     eef_pos = wp_obs["robot0_eef_pos"]
                     joint_pos = {
                         "robot0_joint_pos": wp_obs["robot0_joint_pos"],

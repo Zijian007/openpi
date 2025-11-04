@@ -82,6 +82,9 @@ class LiberoInputs(transforms.DataTransformFn):
         
         if "sampling_bs" in data:
             inputs["sampling_bs"] = data["sampling_bs"]
+        
+        if "sampling_std" in data:
+            inputs["sampling_std"] = data["sampling_std"]
 
         return inputs
 
