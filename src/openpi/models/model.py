@@ -262,6 +262,23 @@ class BaseModelConfig(abc.ABC):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
         safetensors.torch.load_model(model, weight_path)
+        # 手动加载 state dict 并处理键名不匹配问题
+        state_dict = {}
+        # with safetensors.safe_open(weight_path, framework="pt", device="cpu") as f:
+        #     for key in f.keys():
+        #         # 去掉 'model.' 前缀（如果存在）
+        #         new_key = key.replace("model.", "", 1) if key.startswith("model.") else key
+        #         state_dict[new_key] = f.get_tensor(key)
+        
+        # # 加载到模型，允许部分键不匹配
+        # missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        
+        # if missing_keys:
+        #     logger.warning(f"Missing keys when loading PyTorch model: {missing_keys[:10]}...")
+        # if unexpected_keys:
+        #     logger.warning(f"Unexpected keys when loading PyTorch model: {unexpected_keys[:10]}...")
+        
+        # logger.info("PyTorch model loaded successfully!")
         return model
 
     @abc.abstractmethod

@@ -5,6 +5,7 @@ from scipy.ndimage import distance_transform_edt
 from scipy.ndimage import gaussian_filter
 import transforms3d
 from .utils import get_clock_time, normalize_map
+import robosuite.utils.transform_utils as T
 
 # creating some aliases for end effector and table in case LLMs refer to them differently (but rarely this happens)
 EE_ALIAS = ["ee", "endeffector", "end_effector", "end effector", "gripper", "hand"]
@@ -29,11 +30,11 @@ class LMP_interface:
         # self._env.workspace_bounds_max = robot_base_pos + np.array([0.8, 0.8, 1.0])
         # calculate size of each voxel (resolution)
         self._resolution = (self._env.workspace_bounds_max - self._env.workspace_bounds_min) / self._map_size
-        print("#" * 50)
-        print(f"## voxel resolution: {self._resolution}")
-        print("#" * 50)
-        print()
-        print()
+        # print("#" * 50)
+        # print(f"## voxel resolution: {self._resolution}")
+        # print("#" * 50)
+        # print()
+        # print()
 
     # ======================================================
     # == functions exposed to LLM
@@ -293,7 +294,7 @@ class LMP_interface:
             step_info["costmap"] = costmap
             step_info["raw_target_map"] = _affordance_map
 
-            all_nearby_voxels = self._calculate_nearby_voxel(start_pos, object_centric=object_centric)
+            all_nearby_voxels = self._calculate_nearby_voxel(start_pos, object_centric=object_centric) ##在里面定义half_size,目前为1voxel
             nearby_score = costmap[all_nearby_voxels[:, 0], all_nearby_voxels[:, 1], all_nearby_voxels[:, 2]]
             # Find the minimum cost voxel
             steepest_idx_top3 = np.argsort(nearby_score)[:1]
@@ -302,26 +303,33 @@ class LMP_interface:
             step_info["next_pos_voxel"] = top3_voxels
             sample_pos = []
             sample_joint_pos = []
+            sample_action = []
             for i in range(len(top3_voxels)):
                 next_path_voxel = [top3_voxels[i]]
                 traj_world = self._path2traj(next_path_voxel, _rotation_map, _velocity_map, _gripper_map)
 
                 for i, waypoint in enumerate(traj_world):
                     target_xyz, target_rotation, target_velocity, target_gripper = waypoint
-                    target_pose = np.concatenate([target_xyz, target_rotation])
-                    wp_obs = self._env.apply_action(np.concatenate([target_pose, [target_gripper]]))
+                    target_pose = np.concatenate([target_xyz, target_rotation,[target_gripper]])
+                    wp_obs = self._env.apply_action(np.concatenate([target_pose, [target_gripper]])) 
+                    # ## self._env.apply_action()在libero/libero/envs/env_wrapper.py中定义, 是个VoxRenderEnv
                     eef_pos = wp_obs["robot0_eef_pos"]
                     joint_pos = {
                         "robot0_joint_pos": wp_obs["robot0_joint_pos"],
                         "robot0_gripper_qpos": wp_obs["robot0_gripper_qpos"],
                     }
-
+                    # eef_pos = None
+                    # joint_pos = None
                 sample_pos.append(eef_pos)
                 sample_joint_pos.append(joint_pos)
+                sample_action.append(target_pose)
 
             # step_info['sample_wp_obs'] = wp_obs
+            step_info["sample_action"] = sample_action
             step_info["sample_pos_world"] = np.array(sample_pos)
             step_info["sample_joint_pos"] = sample_joint_pos
+
+            step_info["target_xyz"] = target_xyz
 
             step_info["start_pos"] = start_pos
             step_info["movable_obs"] = movable_obs
@@ -546,8 +554,8 @@ class LMP_interface:
             # add to trajectory
             traj.append((world_xyz, rotation, velocity, gripper))
         # append the last waypoint a few more times for the robot to stabilize
-        for _ in range(2):
-            traj.append((world_xyz, rotation, velocity, gripper))
+        # for _ in range(2):
+        #     traj.append((world_xyz, rotation, velocity, gripper))
         return traj
 
     def _preprocess_avoidance_map(self, avoidance_map, affordance_map, movable_obs):

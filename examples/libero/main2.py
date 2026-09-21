@@ -1,9 +1,11 @@
 import collections
 import dataclasses
 import logging
+import re
 import math, sys, os
 import pathlib
 from datetime import datetime
+from typing import List, Optional
 sys.path.append("/hdd/zijianwang/openpi/third_party/LIBERO-PRO")
 import imageio
 from libero.libero import benchmark
@@ -14,9 +16,20 @@ from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
+from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+
+from util import (
+    compute_eef_trajectory_from_actions, 
+    build_reusable_value_map, 
+    evaluate_trajectory_with_value_map,
+    is_gripper_closed,
+    search_best_action_chunk,
+    detect_pre_grasp_state,
+    get_reordered_objects,
+)
 
 
 @dataclasses.dataclass
@@ -35,6 +48,7 @@ class Args:
     task_suite_name: str = (
         "libero_10"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     )
+    task_ids: Optional[List[int]] = None  # Specific task IDs to run (if None, run all tasks)
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
 
@@ -46,6 +60,54 @@ class Args:
     seed: int = 7  # Random Seed (for reproducibility)
 
 
+def _normalize_map(x: np.ndarray) -> np.ndarray:
+    x = x.astype(np.float32)
+    mn, mx = x.min(), x.max()
+    return (x - mn) / (mx - mn + 1e-8)
+
+
+def visualize_affordance_map(affordance_map: np.ndarray, avoidance_map: np.ndarray, lmp_env, env_vox) -> None:
+    target_map = _normalize_map(distance_transform_edt(1 - affordance_map))
+    obstacle_map = _normalize_map(
+        gaussian_filter(avoidance_map, sigma=lmp_env.obstacle_map_gaussian_sigma)
+    )
+    costmap = _normalize_map(
+        target_map * lmp_env.target_map_weight + obstacle_map * lmp_env.obstacle_map_weight
+    )
+
+    targets_voxel = np.argwhere(affordance_map == 1)
+    targets_world = lmp_env._voxel_to_world(targets_voxel)
+
+    step_info = {
+        "costmap": costmap,
+        "raw_target_map": affordance_map,
+        "targets_world": targets_world,
+        "start_pos_world": env_vox.get_ee_pos(),
+    }
+    env_vox.visualizer.visualize(step_info, show=False, save=True)
+
+
+def query_affordance_value_at_voxel(affordance_map: np.ndarray, voxel_xyz) -> float:
+    voxel_xyz = np.round(np.asarray(voxel_xyz)).astype(int)
+    if voxel_xyz.shape != (3,):
+        raise ValueError(f"voxel_xyz must be shape (3,), got {voxel_xyz.shape}")
+
+    x, y, z = voxel_xyz.tolist()
+    if (
+        x < 0 or x >= affordance_map.shape[0]
+        or y < 0 or y >= affordance_map.shape[1]
+        or z < 0 or z >= affordance_map.shape[2]
+    ):
+        raise IndexError(f"voxel index out of range: {voxel_xyz}, map shape={affordance_map.shape}")
+
+    return float(affordance_map[x, y, z])
+
+
+def query_affordance_value_at_world(affordance_map: np.ndarray, world_xyz, lmp_env) -> float:
+    voxel_xyz = lmp_env._world_to_voxel(np.asarray(world_xyz, dtype=np.float32))
+    return query_affordance_value_at_voxel(affordance_map, voxel_xyz)
+
+
 def eval_libero(args: Args) -> None:
     # Set random seed
     np.random.seed(args.seed)
@@ -54,7 +116,7 @@ def eval_libero(args: Args) -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Create timestamped video output directory
-    video_out_dir = pathlib.Path(args.video_out_path) / timestamp / args.task_suite_name
+    video_out_dir = pathlib.Path(args.video_out_path) / f"{timestamp}_{args.task_suite_name}"
     video_out_dir.mkdir(parents=True, exist_ok=True)
     logging.info(f"Videos will be saved to: {video_out_dir}")
 
@@ -81,7 +143,8 @@ def eval_libero(args: Args) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+    task_ids_to_run = args.task_ids if args.task_ids is not None else list(range(num_tasks_in_suite))
+    for task_id in tqdm.tqdm(task_ids_to_run):
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -93,7 +156,7 @@ def eval_libero(args: Args) -> None:
 
         # Start episodes
         task_episodes, task_successes = 0, 0
-        for episode_idx in tqdm.tqdm(range(arvags.num_trials_per_task)):
+        for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment
@@ -103,6 +166,22 @@ def eval_libero(args: Args) -> None:
             # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
 
+            reusable_valuemap = build_reusable_value_map(env, task_description, stage=0)
+            env_vox = reusable_valuemap["env_vox"]
+            lmp_env = reusable_valuemap["lmp_env"]
+            avoidance_map = reusable_valuemap["avoidance_map"]
+            affordance_map = reusable_valuemap["affordance_map"]
+
+            # Visualize 3D value map once per episode
+            visualize_affordance_map(affordance_map, avoidance_map, lmp_env, env_vox)
+
+            # Example: query affordance value at current ee world coordinate
+            current_affordance_value = query_affordance_value_at_world(
+                affordance_map, env_vox.get_ee_pos(), lmp_env
+            )
+            logging.info(f"Current EE affordance value: {current_affordance_value:.4f}")
+
+            
             # Setup
             t = 0
             replay_images = []
@@ -162,7 +241,7 @@ def eval_libero(args: Args) -> None:
                     action = action_plan.popleft()
 
                     # Execute action in environment
-                    obs, reward, done, info = env.step(action.tolist())
+                    obs, reward, done, info = env_vox.step(action.tolist())
                     action_length = len(action.tolist())
                     if done:
                         task_successes += 1

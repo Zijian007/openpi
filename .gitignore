@@ -1,8 +1,86 @@
-# Data directories.
+# ---------------------------------------------------------------------------
+# openpi / local training & eval artifacts
+# ---------------------------------------------------------------------------
+
+# Downloaded / exported weights and checkpoints
 assets/
 checkpoints/
+pytorch/checkpoint/
+pi0_libero_base/
+pi0_*/
+**/params/
+**/orbax/
+
+# Weight / array dumps (do not commit multi-GB blobs)
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.npy
+*.npz
+*.h5
+*.pkl
+*.pickle
+*.joblib
+
+# Datasets & raw experiment I/O
 data/
+datasets/**/data/
+datasets/**/*.hdf5
+datasets/**/*.h5
+datasets/**/*.rlds/
+experiments/
+examples/*/experiments/
+runs/
+outputs/
+results/
+logs/
+robot_videos/
+
+# Media produced by rollouts / demos
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.gif
+!examples/libero/velocity_control_constant.mp4
+
+# Simulator / runtime logs
+MUJOCO_LOG.TXT
+mujoco.log
+*.mujoco.log
+core
+core.*
+
+# ML experiment trackers
 wandb/
+mlruns/
+lightning_logs/
+.neptune/
+tensorboard/
+events.out.tfevents.*
+
+# Caches
+.ruff_cache/
+.uv/
+.cache/
+hf_cache/
+.huggingface/
+.torch/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+
+# ---------------------------------------------------------------------------
+# Python (template)
+# ---------------------------------------------------------------------------
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -34,7 +112,7 @@ MANIFEST
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+#  before PyInstaller builds the exe so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -129,6 +207,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -166,5 +246,3 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
-examples/libero/experiments
-experiments
