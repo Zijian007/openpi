@@ -1,7 +1,11 @@
 # G2 wholebody × OpenPI π₀.₅（并行于 `~/work/G2_pi`）
 
-与 **LeRobot v3 + PEFT** 路线独立：本目录吃 **LeRobot v2.1**，JAX/OpenPI 训练。  
-总文档：[g2_wzj_docs/ops/ml/openpi-pi05-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-g2.md)。
+与 **LeRobot v3 + PEFT** 路线独立：本目录吃 **LeRobot v2.1**，JAX/OpenPI 训练与部署。
+
+| | OpenPI 线（本仓） | LeRobot 线 |
+|--|------------------|------------|
+| 训练 | [openpi-pi05-train-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md) | [lerobot-pi05-train-g2.md](../../../g2_wzj_docs/ops/ml/lerobot-pi05-train-g2.md) |
+| 部署 | [openpi-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md) | [lerobot-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/lerobot-pi05-deploy-g2.md) |
 
 ## 布局
 
@@ -40,7 +44,7 @@ rsync -avP .../recorded/vr/lerobot_v21/ \
 ```bash
 # 推荐：norm stats + 训练一条龙
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_pipeline.sh --smoke   # LoRA 短跑
-CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_pipeline.sh           # full
+CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_pipeline.sh           # full（单 4090 请 CONFIG_NAME=low_mem）
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_pipeline.sh --skip-norm  # 已有 assets
 
 # 也可拆开
@@ -48,18 +52,22 @@ bash scripts/g2/compute_norm_stats.sh
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_smoke.sh
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_full.sh
 
-bash scripts/g2/serve_policy.sh --policy-dir checkpoints/pi05_g2_vr/<exp>/<step>
+# OpenPI 推理服务（≠ G2_pi policy_server）
+bash scripts/g2/serve_policy.sh \
+  --config-name pi05_g2_vr_low_mem \
+  --policy-dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
 ```
 
 | Config | 说明 |
 |--------|------|
-| `pi05_g2_vr` | 全参微调起点；batch 默认 8 |
+| `pi05_g2_vr` | 全参微调；单 4090 通常 OOM，需多卡 FSDP |
 | `pi05_g2_vr_low_mem` | LoRA；smoke / 24GB |
 
 Delta：默认 `observation.ee` 作 state，`DeltaActions(9,-1,9,-1)`（夹爪绝对）。绝对 pose 训法：config 里 `use_delta_actions=False`。
 
-## 与 G2_pi 边界
+## 与 G2_pi / LeRobot 真机栈边界
 
-- 环境 / cache / W&B project（`G2_openpi`）全部分开  
+- 环境 / cache / W&B（`G2_openpi`）全部分开  
 - checkpoint **不能**互通  
-- `serve_policy` ≠ `G2_pi` `policy_server.sh`；域控 `pi05_client` 需另适配  
+- `serve_policy` ≠ `G2_pi` `policy_server.sh`  
+- 域控现有 `pi05_client` **只服务 LeRobot 线**；OpenPI 线见 [openpi-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)

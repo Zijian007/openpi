@@ -993,7 +993,7 @@ _CONFIGS = [
     ),
     #
     # G2 wholebody (VR pose) — parallel to LeRobot/G2_pi PEFT path. Needs LeRobot v2.1 under
-    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-g2.md
+    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md
     #
     TrainConfig(
         name="pi05_g2_vr",
