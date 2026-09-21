@@ -1,0 +1,6 @@
+# Pinned OpenPI tree used by scripts/g2/*.
+# This repo *is* the OpenPI working copy (parallel to G2_pi's third_party/lerobot).
+# Update after smoke-testing train + serve on the new SHA.
+OPENPI_GIT_URL=https://github.com/Physical-Intelligence/openpi.git
+OPENPI_BRANCH=for-G2
+OPENPI_GIT_SHA=60ff7a2

@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.g2_policy as g2_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -459,6 +460,66 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotG2DataConfig(DataConfigFactory):
+    """G2 wholebody LeRobot v2.1 (pose + 3 cameras) → OpenPI π₀.₅.
+
+    Disk keys match wholebody export (`lerobot_format: v2.1`, `lerobot_action_space: pose`).
+    Put the dataset tree under ``$HF_LEROBOT_HOME/<repo_id>/`` (scripts/g2 sets
+    ``HF_LEROBOT_HOME`` to ``~/work/openpi/data``).
+
+    When ``use_delta_actions=True`` (default), proprio ``state`` is **observation.ee**
+    (20-D) so ``DeltaActions`` computes chunk-relative pose: ``action[t:t+T] - ee[t]``.
+    Grippers stay absolute. Do **not** feed ``qa.command_minus_ee`` as actions.
+    """
+
+    # Chunk-relative EE pose (OpenPI DeltaActions). False → absolute pose labels; state=joints.
+    use_delta_actions: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Delta path needs EE as state (same dim/layout as pose actions). Absolute path uses joints.
+        state_key = "observation.ee" if self.use_delta_actions else "observation.state"
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "observation.images.head_color",
+                        "observation/wrist_image_left": "observation.images.hand_left_color",
+                        "observation/wrist_image_right": "observation.images.hand_right_color",
+                        "observation/state": state_key,
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[g2_policy.G2Inputs(model_type=model_config.model_type)],
+            outputs=[g2_policy.G2Outputs()],
+        )
+
+        if self.use_delta_actions:
+            # L/R: xyz+rot6d delta; gripper absolute. Mask length 20.
+            delta_action_mask = _transforms.make_bool_mask(9, -1, 9, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            # LeRobot v2.1 column is singular ``action`` (not ``actions``).
+            action_sequence_keys=("action",),
         )
 
 
@@ -929,6 +990,52 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
+    ),
+    #
+    # G2 wholebody (VR pose) — parallel to LeRobot/G2_pi PEFT path. Needs LeRobot v2.1 under
+    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-g2.md
+    #
+    TrainConfig(
+        name="pi05_g2_vr",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotG2DataConfig(
+            repo_id="g2_vr_lerobot_v21",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+        # Single 4090: start small; raise if VRAM allows.
+        batch_size=8,
+        wandb_enabled=True,
+        project_name="G2_openpi",
+    ),
+    TrainConfig(
+        name="pi05_g2_vr_low_mem",
+        # LoRA variants for smoke / 24GB cards (mirrors pi0_libero_low_mem_finetune pattern).
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotG2DataConfig(
+            repo_id="g2_vr_lerobot_v21",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=30_000,
+        batch_size=2,
+        wandb_enabled=True,
+        project_name="G2_openpi",
     ),
     #
     # Debugging configs.
