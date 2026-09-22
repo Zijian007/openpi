@@ -22,7 +22,7 @@ source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 ########################################
 
 CONFIG_NAME="pi05_g2_vr_low_mem"
-# Leave empty → auto-pick highest numeric step under checkpoints/<CONFIG_NAME>/*/*/
+# Leave empty → newest experiment under checkpoints/<CONFIG_NAME>/, then its highest numeric step.
 POLICY_DIR=""
 PORT=8000
 DEFAULT_PROMPT=""
@@ -68,16 +68,29 @@ export CUDA_VISIBLE_DEVICES
 [[ "${USE_PROXY}" == true ]] && g2_openpi_setup_proxy || g2_openpi_clear_proxy
 
 if [[ -z "${POLICY_DIR}" ]]; then
-  # Pick highest numeric step under checkpoints/<config>/<exp>/<step>.
+  # Newest experiment (by its latest step dir mtime), then highest numeric step in that exp.
   # Lexicographic sort is wrong: "5000" sorts after "29999".
-  if [[ -d "${PROJECT_ROOT}/checkpoints/${CONFIG_NAME}" ]]; then
-    POLICY_DIR="$(
-      find "${PROJECT_ROOT}/checkpoints/${CONFIG_NAME}" -mindepth 2 -maxdepth 2 -type d -printf '%f\t%p\n' \
-        | awk -F '\t' '$1 ~ /^[0-9]+$/ { print $1+0 "\t" $2 }' \
+  # Max step across all exps is also wrong: a new run at step 5000 would lose to an old 30000.
+  _CKPT_ROOT="${PROJECT_ROOT}/checkpoints/${CONFIG_NAME}"
+  if [[ -d "${_CKPT_ROOT}" ]]; then
+    _NEWEST_STEP="$(
+      find "${_CKPT_ROOT}" -mindepth 2 -maxdepth 2 -type d -printf '%T@\t%f\t%p\n' \
+        | awk -F '\t' '$2 ~ /^[0-9]+$/ { print }' \
         | sort -n \
         | tail -1 \
-        | cut -f2-
+        | cut -f3-
     )"
+    if [[ -n "${_NEWEST_STEP}" ]]; then
+      _EXP_DIR="$(dirname "${_NEWEST_STEP}")"
+      POLICY_DIR="$(
+        find "${_EXP_DIR}" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%p\n' \
+          | awk -F '\t' '$1 ~ /^[0-9]+$/ { print $1+0 "\t" $2 }' \
+          | sort -n \
+          | tail -1 \
+          | cut -f2-
+      )"
+      echo "auto policy: newest exp $(basename "${_EXP_DIR}")"
+    fi
   fi
 fi
 

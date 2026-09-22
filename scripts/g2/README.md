@@ -46,7 +46,7 @@ rsync -avP .../recorded/vr/lerobot_v21/ \
 ```bash
 # 推荐：norm stats + 训练一条龙
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh --smoke   # LoRA 短跑
-CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh           # full（单 4090 请 CONFIG_NAME=low_mem）
+CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh           # full；单 4090 会 OOM，请先设 CONFIG_NAME=pi05_g2_vr_low_mem
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh --skip-norm
 
 # 也可拆开
@@ -69,7 +69,7 @@ Delta：默认 `observation.ee` 作 state，`DeltaActions(9,-1,9,-1)`（夹爪�
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/deploy/serve_policy.sh \
   --config-name pi05_g2_vr_low_mem \
   --policy-dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
-# 省略 --policy-dir → 该 config 下数值最大 step（非字典序）
+# 省略 --policy-dir → 最近写入的实验里，数值最大的 step（非跨实验比 step，也非字典序）
 
 bash scripts/g2/deploy/smoke_infer_client.sh --port 8000   # 端口对齐 serve
 ```

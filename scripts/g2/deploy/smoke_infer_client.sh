@@ -24,7 +24,7 @@ source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 
 HOST="127.0.0.1"
 PORT=8000
-PROMPT="Pick up the drink and put it in the box."
+PROMPT="Pick up the drink and put it in the box"
 NUM_INFER=3
 ZEROS=false
 CONNECT_TIMEOUT_S=60

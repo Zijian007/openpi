@@ -42,7 +42,7 @@ class Args:
     host: str = "127.0.0.1"
     port: int = 8000
     """Must match serve_policy --port (default 8000; use 8001 if LeRobot also on :8000)."""
-    prompt: str = "Pick up the drink and put it in the box."
+    prompt: str = "Pick up the drink and put it in the box"
     num_infer: int = 3
     """How many infer round-trips (first often includes JIT / warmup)."""
     zeros: bool = False

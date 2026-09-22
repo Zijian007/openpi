@@ -33,7 +33,7 @@ def make_g2_example() -> dict:
         "observation/image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
         "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
         "observation/wrist_image_right": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-        "prompt": "Pick up the drink and put it in the box.",
+        "prompt": "Pick up the drink and put it in the box",
     }
 
 

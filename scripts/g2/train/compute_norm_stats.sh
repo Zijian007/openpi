@@ -38,4 +38,4 @@ echo "config:  ${CONFIG_NAME}"
 echo "data:    ${HF_LEROBOT_HOME}/${REPO_ID}"
 echo "========================================"
 
-uv run scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}"
+uv run scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}" --repo-id="${REPO_ID}"

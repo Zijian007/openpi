@@ -26,11 +26,11 @@ source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 
 # ---- 模式 / 实验 ----
 # MODE:
-#   full  → CONFIG_NAME 默认 pi05_g2_vr（全参微调）
-#   smoke → CONFIG_NAME 默认 pi05_g2_vr_low_mem（JAX LoRA，省显存；短跑验证）
+#   full  → CONFIG_NAME 为空时用 pi05_g2_vr（全参微调；单 4090 通常 OOM）
+#   smoke → CONFIG_NAME 为空时用 pi05_g2_vr_low_mem（JAX LoRA，省显存；短跑验证）
 MODE="full"
-# 非空则强制指定 TrainConfig 名，覆盖 MODE 默认（一般保持空）
-CONFIG_NAME="pi05_g2_vr_low_mem"
+# 非空则强制指定 TrainConfig 名，覆盖 MODE 默认。单卡请设 pi05_g2_vr_low_mem。
+CONFIG_NAME=""
 # 实验名：同时用作
 #   1) checkpoint 子目录名
 #   2) W&B run 名（wandb.init(name=exp_name)）
@@ -78,7 +78,8 @@ ASSETS_BASE_DIR="./assets"
 #   pi05_g2_vr_low_mem（LoRA）默认 2 —— 单 4090 可跑（峰值约 ~17GiB）；OOM 再降到 1
 #   MODE=smoke 且此处为空时，脚本强制 1（短跑验证）
 #   加大吞吐就加这个；显存不够优先降它，而不是先动 FSDP
-BATCH_SIZE="8"
+#   空 = 用 config 默认；MODE=smoke 且此处为空时脚本强制 1
+BATCH_SIZE=""
 #
 # NUM_WORKERS：Torch DataLoader 预取进程数（默认 2）
 #   增大可减轻 GPU 等数据，但吃 CPU/主机内存；视频解码重时可试 4～8
@@ -217,6 +218,15 @@ if [[ "${MODE}" == "smoke" ]]; then
   [[ -z "${BATCH_SIZE}" ]] && BATCH_SIZE=1
 fi
 
+# pi05_g2_vr is full fine-tune. One visible GPU is the usual 24GB OOM case.
+if [[ "${CONFIG_NAME}" == "pi05_g2_vr" ]]; then
+  _GPU_COUNT="$(awk -F',' '{print NF}' <<< "${CUDA_VISIBLE_DEVICES}")"
+  if [[ "${_GPU_COUNT}" -le 1 ]]; then
+    echo "WARN: ${CONFIG_NAME} full fine-tune usually OOMs on a single 24GB GPU." >&2
+    echo "      Set CONFIG_NAME=pi05_g2_vr_low_mem, or pass more GPUs and FSDP_DEVICES." >&2
+  fi
+fi
+
 if [[ "${RESUME}" == true && "${OVERWRITE}" == true ]]; then
   echo "ERROR: RESUME and OVERWRITE both true" >&2
   exit 1
@@ -289,7 +299,7 @@ if [[ "${SKIP_NORM}" != true ]]; then
   echo ""
   echo "[1/2] compute_norm_stats ..."
   g2_openpi_setup_hf_cache
-  NORM_ARGS=(scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}")
+  NORM_ARGS=(scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}" --repo-id="${REPO_ID}")
   [[ -n "${MAX_FRAMES}" ]] && NORM_ARGS+=(--max-frames="${MAX_FRAMES}")
   uv run "${NORM_ARGS[@]}"
 else
@@ -307,6 +317,7 @@ ARGS=(
   --checkpoint-base-dir="${CHECKPOINT_BASE_DIR}"
   --assets-base-dir="${ASSETS_BASE_DIR}"
   --project-name="${WANDB_PROJECT}"
+  --data.repo-id="${REPO_ID}"
 )
 
 [[ -n "${BATCH_SIZE}" ]] && ARGS+=(--batch-size="${BATCH_SIZE}")
