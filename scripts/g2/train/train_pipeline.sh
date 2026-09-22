@@ -3,13 +3,13 @@
 # 所有常用训练参数在下面 CONFIG 改（对齐 G2_pi/train_full.sh 风格）。
 # CLI 可选覆盖；更细项也可直接改 src/openpi/training/config.py。
 #
-#   CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_pipeline.sh
-#   CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_pipeline.sh --smoke
-#   tmux new -s g2-openpi 'cd ~/work/openpi && CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_pipeline.sh'
+#   CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh
+#   CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh --smoke
+#   tmux new -s g2-openpi 'cd ~/work/openpi && CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh'
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 
@@ -140,7 +140,7 @@ WANDB_PROJECT="G2_openpi"  # → --project-name
 
 usage() {
   cat <<EOF
-Usage: bash scripts/g2/train_pipeline.sh [options]
+Usage: bash scripts/g2/train/train_pipeline.sh [options]
 
   Prefer editing the CONFIG block at the top of this script.
   CLI overrides:

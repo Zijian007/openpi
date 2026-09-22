@@ -77,5 +77,5 @@ fi
 
 echo "[bootstrap] done. Next:"
 echo "  1) rsync lerobot_v21 → ${HF_LEROBOT_HOME}/g2_vr_lerobot_v21/"
-echo "  2) bash scripts/g2/compute_norm_stats.sh"
-echo "  3) bash scripts/g2/train_smoke.sh"
+echo "  2) bash scripts/g2/train/compute_norm_stats.sh"
+echo "  3) bash scripts/g2/train/train_smoke.sh"

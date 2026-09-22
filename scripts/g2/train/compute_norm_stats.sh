@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Compute norm stats for pi05_g2_vr (writes under ./assets/).
 #
-#   bash scripts/g2/compute_norm_stats.sh
-#   bash scripts/g2/compute_norm_stats.sh --config-name pi05_g2_vr_low_mem
+#   bash scripts/g2/train/compute_norm_stats.sh
+#   bash scripts/g2/train/compute_norm_stats.sh --config-name pi05_g2_vr_low_mem
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 
@@ -20,7 +20,7 @@ while [[ $# -gt 0 ]]; do
     --repo-id) REPO_ID="$2"; shift 2 ;;
     --no-proxy) USE_PROXY=false; shift ;;
     -h|--help)
-      echo "Usage: bash scripts/g2/compute_norm_stats.sh [--config-name NAME] [--repo-id ID] [--no-proxy]"
+      echo "Usage: bash scripts/g2/train/compute_norm_stats.sh [--config-name NAME] [--repo-id ID] [--no-proxy]"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;

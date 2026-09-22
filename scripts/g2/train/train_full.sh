@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # G2 OpenPI full fine-tune (default: pi05_g2_vr).
 #
-#   bash scripts/g2/train_full.sh
-#   CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train_full.sh
-#   tmux new -s g2-openpi 'cd ~/work/openpi && bash scripts/g2/train_full.sh'
+#   bash scripts/g2/train/train_full.sh
+#   CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_full.sh
+#   tmux new -s g2-openpi 'cd ~/work/openpi && bash scripts/g2/train/train_full.sh'
 #
 # Parallel to ~/work/G2_pi/scripts/train/train_full.sh — separate venv, data, GPUs.
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # G2 OpenPI smoke: few steps on pi05_g2_vr_low_mem (LoRA).
 #
-#   bash scripts/g2/train_smoke.sh
+#   bash scripts/g2/train/train_smoke.sh
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 

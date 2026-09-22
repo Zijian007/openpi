@@ -105,8 +105,11 @@ def main(args: Args) -> None:
         policy = _policy.PolicyRecorder(policy, "policy_records")
 
     hostname = socket.gethostname()
-    local_ip = socket.gethostbyname(hostname)
-    logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
+    try:
+        local_ip = socket.gethostbyname(hostname)
+    except socket.gaierror:
+        local_ip = "unknown"
+    logging.info("Creating server (host: %s, ip: %s, port: %s)", hostname, local_ip, args.port)
 
     server = websocket_policy_server.WebsocketPolicyServer(
         policy=policy,

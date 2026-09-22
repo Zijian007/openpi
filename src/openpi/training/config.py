@@ -993,7 +993,7 @@ _CONFIGS = [
     ),
     #
     # G2 wholebody (VR pose) — parallel to LeRobot/G2_pi PEFT path. Needs LeRobot v2.1 under
-    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md
+    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/train/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md
     #
     TrainConfig(
         name="pi05_g2_vr",
@@ -1009,6 +1009,15 @@ _CONFIGS = [
         batch_size=8,
         wandb_enabled=True,
         project_name="G2_openpi",
+        # Exposed to serve_policy clients on connect (metadata frame).
+        policy_metadata={
+            "backend": "openpi",
+            "robot": "g2",
+            "action_dim": 20,
+            "action_horizon": 10,
+            "state_is_ee": True,
+            "protocol": "openpi.websocket.v1",
+        },
     ),
     TrainConfig(
         name="pi05_g2_vr_low_mem",
@@ -1036,6 +1045,14 @@ _CONFIGS = [
         batch_size=2,
         wandb_enabled=True,
         project_name="G2_openpi",
+        policy_metadata={
+            "backend": "openpi",
+            "robot": "g2",
+            "action_dim": 20,
+            "action_horizon": 10,
+            "state_is_ee": True,
+            "protocol": "openpi.websocket.v1",
+        },
     ),
     #
     # Debugging configs.
