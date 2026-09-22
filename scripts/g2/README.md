@@ -65,26 +65,24 @@ Delta：默认 `observation.ee` 作 state，`DeltaActions(9,-1,9,-1)`（夹爪�
 ## 部署（`scripts/g2/deploy/`）
 
 ```bash
-# OpenPI 推理服务（≠ G2_pi policy_server）
-# 与 LeRobot :8000 并存时用 --port 8001
+# ≠ G2_pi policy_server。与 LeRobot :8000 并存时加 --port 8001
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/deploy/serve_policy.sh \
   --config-name pi05_g2_vr_low_mem \
   --policy-dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
-# 省略 --policy-dir 时自动选该 config 下最新 step
+# 省略 --policy-dir → 该 config 下数值最大 step（非字典序）
 
-# GPU 本机假观测 smoke（须先起 serve_policy）
-bash scripts/g2/deploy/smoke_infer_client.sh
-bash scripts/g2/deploy/smoke_infer_client.sh --port 8001 --zeros --num-infer 1
+bash scripts/g2/deploy/smoke_infer_client.sh --port 8000   # 端口对齐 serve
 ```
 
 | 脚本 | 作用 |
 |------|------|
-| `deploy/serve_policy.sh` | WebSocket 推理服务（默认 `:8000`） |
-| `deploy/smoke_infer_client.sh` | 假观测 round-trip 验收（shape / NaN / 耗时） |
+| `deploy/serve_policy.sh` | WebSocket 推理（默认 `:8000`） |
+| `deploy/smoke_infer_client.sh` | 假观测 round-trip |
 
-## 与 G2_pi / LeRobot 真机栈边界
+域控：`start_openpi_pi05_infer.sh`（`openpi_pi05_client`）。详见 [openpi-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)。
 
-- 环境 / cache / W&B（`G2_openpi`）全部分开  
-- checkpoint **不能**互通  
-- `deploy/serve_policy` ≠ `G2_pi` `policy_server.sh`  
-- 域控现有 `lerobot_pi05_client` **只服务 LeRobot 线**；OpenPI 线见 [openpi-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)
+## 与 G2_pi / LeRobot 边界
+
+- 环境 / cache / W&B（`G2_openpi`）分开；ckpt **不互通**
+- `serve_policy` ≠ `G2_pi` `policy_server`
+- 域控 `lerobot_pi05_client` 只服务 LeRobot 线；OpenPI 用 `openpi_pi05_client`

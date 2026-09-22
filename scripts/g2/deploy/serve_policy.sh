@@ -22,7 +22,7 @@ source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 ########################################
 
 CONFIG_NAME="pi05_g2_vr_low_mem"
-# Leave empty → auto-pick latest step under checkpoints/<CONFIG_NAME>/*/*/
+# Leave empty → auto-pick highest numeric step under checkpoints/<CONFIG_NAME>/*/*/
 POLICY_DIR=""
 PORT=8000
 DEFAULT_PROMPT=""
@@ -68,9 +68,16 @@ export CUDA_VISIBLE_DEVICES
 [[ "${USE_PROXY}" == true ]] && g2_openpi_setup_proxy || g2_openpi_clear_proxy
 
 if [[ -z "${POLICY_DIR}" ]]; then
-  # Pick latest step under checkpoints/<config>/*/*/
+  # Pick highest numeric step under checkpoints/<config>/<exp>/<step>.
+  # Lexicographic sort is wrong: "5000" sorts after "29999".
   if [[ -d "${PROJECT_ROOT}/checkpoints/${CONFIG_NAME}" ]]; then
-    POLICY_DIR="$(find "${PROJECT_ROOT}/checkpoints/${CONFIG_NAME}" -mindepth 2 -maxdepth 2 -type d | sort | tail -1 || true)"
+    POLICY_DIR="$(
+      find "${PROJECT_ROOT}/checkpoints/${CONFIG_NAME}" -mindepth 2 -maxdepth 2 -type d -printf '%f\t%p\n' \
+        | awk -F '\t' '$1 ~ /^[0-9]+$/ { print $1+0 "\t" $2 }' \
+        | sort -n \
+        | tail -1 \
+        | cut -f2-
+    )"
   fi
 fi
 
