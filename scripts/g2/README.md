@@ -43,16 +43,28 @@ rsync -avP .../recorded/vr/lerobot_v21/ \
 
 ## 训练（`scripts/g2/train/`）
 
-```bash
-# 推荐：norm stats + 训练一条龙
-CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh --smoke   # LoRA 短跑
-CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh           # full；单 4090 会 OOM，请先设 CONFIG_NAME=pi05_g2_vr_low_mem
-CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh --skip-norm
+主入口 **`train_pipeline.sh`**（norm → train）。其它脚本是薄包装。
 
-# 也可拆开
+```bash
+# 单卡 LoRA（默认 preset=low_mem）
+CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh
+
+# 短跑验证
+CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_pipeline.sh --smoke
+
+# 全参微调（多卡 / FSDP）
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/g2/train/train_pipeline.sh --preset full_ft
+
+# 只看最终 uv 命令
+bash scripts/g2/train/train_pipeline.sh --smoke --dry-run
+
+# 高级 tyro 覆盖（不改 bash）
+bash scripts/g2/train/train_pipeline.sh -- --optimizer.peak-lr=1e-5
+
+# 拆开跑
 bash scripts/g2/train/compute_norm_stats.sh
-CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_smoke.sh
-CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_full.sh
+CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_smoke.sh   # → --smoke
+CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_full.sh  # → --preset full_ft
 ```
 
 | Config | 说明 |

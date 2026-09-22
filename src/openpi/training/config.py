@@ -993,11 +993,13 @@ _CONFIGS = [
     ),
     #
     # G2 wholebody (VR pose) — parallel to LeRobot/G2_pi PEFT path. Needs LeRobot v2.1 under
-    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/train/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md
+    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md
     #
     TrainConfig(
         name="pi05_g2_vr",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        # discrete_state_input 不写则跟随 pi05：True，当前 EE 打进 prompt。
+        # action_horizon 与 Pi0Config 默认一致（50）。30 Hz 下约 1.7 s。
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
         data=LeRobotG2DataConfig(
             repo_id="g2_vr_lerobot_v21",
             base_config=DataConfig(prompt_from_task=True),
@@ -1014,7 +1016,7 @@ _CONFIGS = [
             "backend": "openpi",
             "robot": "g2",
             "action_dim": 20,
-            "action_horizon": 10,
+            "action_horizon": 50,
             "state_is_ee": True,
             "protocol": "openpi.websocket.v1",
         },
@@ -1024,8 +1026,7 @@ _CONFIGS = [
         # LoRA variants for smoke / 24GB cards (mirrors pi0_libero_low_mem_finetune pattern).
         model=pi0_config.Pi0Config(
             pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
+            action_horizon=50,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
         ),
@@ -1049,7 +1050,7 @@ _CONFIGS = [
             "backend": "openpi",
             "robot": "g2",
             "action_dim": 20,
-            "action_horizon": 10,
+            "action_horizon": 50,
             "state_is_ee": True,
             "protocol": "openpi.websocket.v1",
         },

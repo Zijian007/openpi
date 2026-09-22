@@ -32,8 +32,8 @@ from openpi.policies import g2_policy
 
 logger = logging.getLogger("g2.smoke_infer")
 
-# G2 TrainConfig: action_horizon=10; G2Outputs truncates padded 32 → 20.
-EXPECTED_HORIZON = 10
+# G2 TrainConfig: action_horizon=50; G2Outputs truncates padded 32 → 20.
+EXPECTED_HORIZON = 50
 EXPECTED_ACTION_DIM = g2_policy.G2_ACTION_DIM
 
 
