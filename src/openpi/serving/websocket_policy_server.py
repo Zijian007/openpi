@@ -55,7 +55,9 @@ class WebsocketPolicyServer:
         while True:
             try:
                 start_time = time.monotonic()
-                obs = msgpack_numpy.unpackb(await websocket.recv())
+                raw = await websocket.recv()
+                obs_bytes = len(raw) if isinstance(raw, (bytes, bytearray)) else 0
+                obs = msgpack_numpy.unpackb(raw)
 
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs)
@@ -67,6 +69,22 @@ class WebsocketPolicyServer:
                 if prev_total_time is not None:
                     # We can only record the last total time since we also want to include the send time.
                     action["server_timing"]["prev_total_ms"] = prev_total_time * 1000
+
+                policy_ms = None
+                timing = action.get("policy_timing")
+                if isinstance(timing, dict) and "infer_ms" in timing:
+                    try:
+                        policy_ms = float(timing["infer_ms"])
+                    except (TypeError, ValueError):
+                        policy_ms = None
+                image_shapes = _obs_image_shapes(obs)
+                logger.info(
+                    "infer infer_ms=%.1f policy_ms=%s obs_kb=%.1f images=%s",
+                    infer_time * 1000.0,
+                    "-" if policy_ms is None else f"{policy_ms:.1f}",
+                    obs_bytes / 1024.0,
+                    image_shapes or "-",
+                )
 
                 await websocket.send(packer.pack(action))
                 prev_total_time = time.monotonic() - start_time
@@ -81,6 +99,21 @@ class WebsocketPolicyServer:
                     reason="Internal server error. Traceback included in previous frame.",
                 )
                 raise
+
+
+def _obs_image_shapes(obs: object) -> str:
+    if not isinstance(obs, dict):
+        return ""
+    parts: list[str] = []
+    for key, tag in (
+        ("observation/image", "H"),
+        ("observation/wrist_image_left", "L"),
+        ("observation/wrist_image_right", "R"),
+    ):
+        shape = getattr(obs.get(key), "shape", None)
+        if shape is not None and len(shape) >= 2:
+            parts.append(f"{tag}{int(shape[0])}x{int(shape[1])}")
+    return ",".join(parts)
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:
