@@ -16,6 +16,10 @@ export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-${_G2_OPENPI_ENV_DIR}/data}"
 export OPENPI_DATA_HOME="${OPENPI_DATA_HOME:-${HOME}/.cache/openpi}"
 mkdir -p "${OPENPI_DATA_HOME}"
 
+# Persist JAX XLA compiles across serve restarts (first-request JIT ~12s otherwise).
+export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${OPENPI_DATA_HOME}/jax_compile_cache}"
+mkdir -p "${JAX_COMPILATION_CACHE_DIR}"
+
 # Lab /etc/profile.d/huggingface.sh sets HF_* → /opt/huggingface_cache (not writable).
 # Always force override — do not inherit those paths.
 g2_openpi_setup_hf_cache() {

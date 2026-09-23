@@ -2,6 +2,7 @@ import dataclasses
 import enum
 import logging
 import socket
+import time
 
 import tyro
 
@@ -50,6 +51,8 @@ class Args:
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
+    # Run a dummy infer before listen so JAX JIT is not paid by the robot's first chunk.
+    warmup: bool = False
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -96,6 +99,45 @@ def create_policy(args: Args) -> _policy.Policy:
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 
 
+def _g2_warmup_obs() -> dict:
+    from openpi.policies import g2_policy
+
+    return g2_policy.make_g2_example()
+
+
+def _warmup(policy: _policy.Policy, args: Args) -> None:
+    """Compile ``sample_actions`` before binding the port (healthz stays down until done)."""
+    if not args.warmup:
+        return
+    config_name = args.policy.config if isinstance(args.policy, Checkpoint) else None
+    if not config_name or not str(config_name).startswith("pi05_g2"):
+        logging.info("warmup skipped (not a G2 config: %s)", config_name)
+        return
+
+    obs = _g2_warmup_obs()
+    logging.info("warmup start (JIT) images=224x224 prompt=%r", obs.get("prompt"))
+    for step in range(2):
+        t0 = time.monotonic()
+        out = policy.infer(obs)
+        infer_ms = (time.monotonic() - t0) * 1000.0
+        policy_ms = None
+        timing = out.get("policy_timing") if isinstance(out, dict) else None
+        if isinstance(timing, dict) and "infer_ms" in timing:
+            try:
+                policy_ms = float(timing["infer_ms"])
+            except (TypeError, ValueError):
+                policy_ms = None
+        actions = out.get("actions") if isinstance(out, dict) else None
+        shape = getattr(actions, "shape", None)
+        logging.info(
+            "warmup step=%d infer_ms=%.1f policy_ms=%s actions=%s",
+            step,
+            infer_ms,
+            "-" if policy_ms is None else f"{policy_ms:.1f}",
+            shape,
+        )
+
+
 def main(args: Args) -> None:
     policy = create_policy(args)
     policy_metadata = policy.metadata
@@ -103,6 +145,8 @@ def main(args: Args) -> None:
     # Record the policy's behavior.
     if args.record:
         policy = _policy.PolicyRecorder(policy, "policy_records")
+
+    _warmup(policy, args)
 
     hostname = socket.gethostname()
     try:

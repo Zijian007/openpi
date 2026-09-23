@@ -44,11 +44,11 @@ class Args:
     """Must match serve_policy --port (default 8000; use 8001 if LeRobot also on :8000)."""
     prompt: str = "Pick up the drink and put it in the box"
     num_infer: int = 3
-    """How many infer round-trips (first often includes JIT / warmup)."""
+    """How many infer round-trips. With serve_policy.sh warmup, all should be steady (~100ms)."""
+    connect_timeout_s: float = 180.0
+    """Fail if /healthz is not OK within this many seconds (covers weight load + JIT warmup)."""
     zeros: bool = False
     """If true, send zero state/images instead of random (deterministic shape check)."""
-    connect_timeout_s: float = 60.0
-    """Fail if /healthz is not OK within this many seconds."""
 
 
 def _make_obs(args: Args) -> dict:
@@ -66,7 +66,7 @@ def _make_obs(args: Args) -> dict:
 
 
 def _wait_healthz(host: str, port: int, timeout_s: float) -> None:
-    """serve_policy exposes HTTP GET /healthz on the same port."""
+    """serve_policy exposes HTTP GET /healthz on the same port (after warmup)."""
     url = f"http://{host}:{port}/healthz"
     deadline = time.monotonic() + timeout_s
     last_err: BaseException | None = None

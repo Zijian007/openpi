@@ -76,7 +76,7 @@ Delta：默认 `observation.ee` 作 state，`DeltaActions(9,-1,9,-1)`（夹爪�
 
 ## 部署（`scripts/g2/deploy/`）
 
-`serve_policy.sh` 只选 checkpoint，然后调用官方 `scripts/serve_policy.py`。
+`serve_policy.sh` 只选 checkpoint，然后调用官方 `scripts/serve_policy.py`。默认 **warmup**：监听前假图 infer 两次（付 JAX JIT）；`--no-warmup` 可关。`JAX_COMPILATION_CACHE_DIR` 在 `_env.sh` 里指到 `$OPENPI_DATA_HOME/jax_compile_cache`。
 
 ```bash
 # ≠ G2_pi policy_server。与 LeRobot :8000 并存时加 --port 8001
@@ -84,13 +84,14 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/g2/deploy/serve_policy.sh \
   --config-name pi05_g2_vr_low_mem \
   --policy-dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
 # 省略 --policy-dir → 最近写入的实验里，数值最大的 step（非跨实验比 step，也非字典序）
+# healthz 在 warmup 结束后才 OK；日志应有 warmup step=0 infer_ms≈10s+，step=1 ≈100ms
 
-bash scripts/g2/deploy/smoke_infer_client.sh --port 8000   # 端口对齐 serve
+bash scripts/g2/deploy/smoke_infer_client.sh --port 8000   # 端口对齐 serve；首包应已是稳态
 ```
 
 | 脚本 | 作用 |
 |------|------|
-| `deploy/serve_policy.sh` | 选 ckpt + 官方 `serve_policy.py`（默认 `:8000`） |
+| `deploy/serve_policy.sh` | 选 ckpt + 官方 `serve_policy.py`（默认 `:8000`，默认 warmup） |
 | `deploy/smoke_infer_client.sh` | 假观测 round-trip |
 
 域控：`start_openpi_pi05_infer.sh`（`openpi_pi05_client`）。详见 [openpi-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)。
