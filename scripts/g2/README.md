@@ -33,7 +33,7 @@ bash scripts/g2/bootstrap.sh --download-base # + 拉 pi05_base（需代理时常
 ## 数据
 
 ```bash
-# 采数机 / wholebody：lerobot_format: v2.1（或 both）
+# 采数机 / wholebody：launcher.lerobot.format: v2.1（或 both）
 rsync -avP .../recorded/vr/lerobot_v21/ \
   ~/work/openpi/data/g2_vr_lerobot_v21/
 ```
