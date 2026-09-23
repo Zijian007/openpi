@@ -3,6 +3,8 @@
 # shellcheck shell=bash
 
 _G2_OPENPI_ENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Public project root for all scripts/g2/* entrypoints.
+G2_OPENPI_PROJECT_ROOT="${_G2_OPENPI_ENV_DIR}"
 
 # Dataset root for OpenPI's pinned LeRobot 0.1: looks up $HF_LEROBOT_HOME/<repo_id>
 # Keep separate from G2_pi's ~/.cache/huggingface/lerobot (v3).
@@ -31,17 +33,6 @@ g2_openpi_setup_hf_cache
 # Default proxy for lab (bootstrap / weight download). Train scripts may re-export.
 G2_OPENPI_DEFAULT_PROXY="${G2_OPENPI_DEFAULT_PROXY:-socks5h://127.0.0.1:1080}"
 
-g2_openpi_activate() {
-  cd "${_G2_OPENPI_ENV_DIR}" || return 1
-  if [[ ! -d "${_G2_OPENPI_ENV_DIR}/.venv" ]]; then
-    echo "ERROR: no ${_G2_OPENPI_ENV_DIR}/.venv. Run: bash scripts/g2/bootstrap.sh" >&2
-    return 1
-  fi
-  # Prefer uv run from scripts; activate only when callers need a bare python.
-  # shellcheck disable=SC1091
-  source "${_G2_OPENPI_ENV_DIR}/.venv/bin/activate"
-}
-
 g2_openpi_setup_proxy() {
   local proxy="${1:-${G2_OPENPI_DEFAULT_PROXY}}"
   export HTTPS_PROXY="${proxy}"
@@ -65,5 +56,10 @@ g2_openpi_require_dataset() {
   if ! grep -q '"codebase_version"[[:space:]]*:[[:space:]]*"v2.1"' "${root}/meta/info.json" \
     && ! grep -q '"codebase_version": "v2.1"' "${root}/meta/info.json"; then
     echo "WARN: ${root}/meta/info.json does not look like v2.1 — OpenPI may fail to load" >&2
+  fi
+  if [[ ! -f "${root}/meta/episodes_stats.jsonl" ]]; then
+    echo "ERROR: missing ${root}/meta/episodes_stats.jsonl" >&2
+    echo "  OpenPI LeRobot 0.1 requires episodes_stats.jsonl for codebase_version v2.1." >&2
+    return 1
   fi
 }

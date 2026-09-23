@@ -8,30 +8,47 @@
 # Smoke (another terminal):
 #   bash scripts/g2/deploy/smoke_infer_client.sh --port 8000
 #
+# Starts official scripts/serve_policy.py. Prompt is sent by the domain controller.
 # Observation keys must match g2_policy.G2Inputs / make_g2_example().
-# Not compatible with G2_pi policy_server / wholebody lerobot_pi05_client without an adapter.
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck disable=SC1091
-source "${PROJECT_ROOT}/scripts/g2/_env.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 
 ########################################
-# CONFIG
+# CONFIG — 改这里（日常只动本块即可）
 ########################################
+#
+# 加载的是 TrainConfig，不是只读权重目录。
+# action_horizon、discrete_state_input、norm stats 都跟着 CONFIG_NAME 走。
+# 必须和这份 checkpoint 训练时的配置一致。现在 G2 两份都是 horizon 50、state 打进 prompt。
+#
 
+# *********** 权重 ***********
+
+# 哪份 TrainConfig。须与 checkpoint 目录上一级的配置名一致。
+#   pi05_g2_vr_low_mem  LoRA
+#   pi05_g2_vr          全参
 CONFIG_NAME="pi05_g2_vr_low_mem"
-# Leave empty → newest experiment under checkpoints/<CONFIG_NAME>/, then its highest numeric step.
-POLICY_DIR=""
+
+# checkpoint 的 step 目录（…/<exp>/<step>），相对仓库根或绝对路径。
+# 空 = 在 checkpoints/$CONFIG_NAME/ 里选最近写入的实验，再取该实验数值最大的 step。
+POLICY_DIR="/home/zijianwang/work/openpi/checkpoints/pi05_g2_vr_low_mem/g2_vr_pi05_20260922_181334/29999"
+
+CHECKPOINT_BASE_DIR="./checkpoints"
+
+# *********** 服务 ***********
+
+# WebSocket 端口。本机 smoke 默认 8000；域控真机用 8001（和 LeRobot :8000 错开）。
 PORT=8000
-DEFAULT_PROMPT=""
+
+# prompt 只由域控随 observation 传入，服务端不设默认任务句。
+
+# *********** GPU / 代理 ***********
+
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 USE_PROXY=false
-
-########################################
-# CLI
-########################################
 
 usage() {
   cat <<EOF
@@ -40,7 +57,6 @@ Usage: bash scripts/g2/deploy/serve_policy.sh [options]
   --policy-dir DIR | -d DIR   checkpoint step dir (…/<exp>/<step>)
   --config-name NAME          TrainConfig name (default ${CONFIG_NAME})
   --port PORT                 WebSocket port (default ${PORT}; use 8001 if LeRobot holds 8000)
-  --default-prompt TEXT       injected when client omits prompt
   --proxy | --no-proxy
   -h | --help
 EOF
@@ -49,63 +65,57 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --policy-dir|-d)
-      POLICY_DIR="$2"; shift 2 ;;
+      POLICY_DIR="$2"
+      shift 2
+      ;;
     --config-name)
-      CONFIG_NAME="$2"; shift 2 ;;
+      CONFIG_NAME="$2"
+      shift 2
+      ;;
     --port)
-      PORT="$2"; shift 2 ;;
-    --default-prompt)
-      DEFAULT_PROMPT="$2"; shift 2 ;;
-    --no-proxy) USE_PROXY=false; shift ;;
-    --proxy) USE_PROXY=true; shift ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
+      PORT="$2"
+      shift 2
+      ;;
+    --checkpoint-base-dir)
+      CHECKPOINT_BASE_DIR="$2"
+      shift 2
+      ;;
+    --proxy|--use-proxy)
+      USE_PROXY=true
+      shift
+      ;;
+    --no-proxy|--no-use-proxy)
+      USE_PROXY=false
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown arg: $1" >&2
+      usage
+      exit 1
+      ;;
   esac
 done
 
-cd "${PROJECT_ROOT}"
+cd "${G2_OPENPI_PROJECT_ROOT}"
 export CUDA_VISIBLE_DEVICES
 [[ "${USE_PROXY}" == true ]] && g2_openpi_setup_proxy || g2_openpi_clear_proxy
 
-if [[ -z "${POLICY_DIR}" ]]; then
-  # Newest experiment (by its latest step dir mtime), then highest numeric step in that exp.
-  # Lexicographic sort is wrong: "5000" sorts after "29999".
-  # Max step across all exps is also wrong: a new run at step 5000 would lose to an old 30000.
-  _CKPT_ROOT="${PROJECT_ROOT}/checkpoints/${CONFIG_NAME}"
-  if [[ -d "${_CKPT_ROOT}" ]]; then
-    _NEWEST_STEP="$(
-      find "${_CKPT_ROOT}" -mindepth 2 -maxdepth 2 -type d -printf '%T@\t%f\t%p\n' \
-        | awk -F '\t' '$2 ~ /^[0-9]+$/ { print }' \
-        | sort -n \
-        | tail -1 \
-        | cut -f3-
-    )"
-    if [[ -n "${_NEWEST_STEP}" ]]; then
-      _EXP_DIR="$(dirname "${_NEWEST_STEP}")"
-      POLICY_DIR="$(
-        find "${_EXP_DIR}" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%p\n' \
-          | awk -F '\t' '$1 ~ /^[0-9]+$/ { print $1+0 "\t" $2 }' \
-          | sort -n \
-          | tail -1 \
-          | cut -f2-
-      )"
-      echo "auto policy: newest exp $(basename "${_EXP_DIR}")"
-    fi
-  fi
-fi
-
-if [[ -z "${POLICY_DIR}" || ! -d "${POLICY_DIR}" ]]; then
-  echo "ERROR: set --policy-dir to a checkpoint step directory" >&2
+if [[ ! -d "${G2_OPENPI_PROJECT_ROOT}/.venv" ]]; then
+  echo "ERROR: missing ${G2_OPENPI_PROJECT_ROOT}/.venv — run bash scripts/g2/bootstrap.sh" >&2
   exit 1
 fi
 
-# Resolve relative paths
-[[ "${POLICY_DIR}" != /* ]] && POLICY_DIR="${PROJECT_ROOT}/${POLICY_DIR}"
-
-if [[ ! -d "${POLICY_DIR}/params" && ! -f "${POLICY_DIR}/model.safetensors" ]]; then
-  echo "ERROR: ${POLICY_DIR} looks incomplete (need params/ or model.safetensors)" >&2
-  exit 1
-fi
+PICK_ARGS=(
+  scripts/g2/deploy/pick_checkpoint.py
+  --config-name="${CONFIG_NAME}"
+  --checkpoint-base-dir="${CHECKPOINT_BASE_DIR}"
+)
+[[ -n "${POLICY_DIR}" ]] && PICK_ARGS+=(--policy-dir="${POLICY_DIR}")
+POLICY_DIR="$(uv run "${PICK_ARGS[@]}")"
 
 echo "========================================"
 echo "serve_policy  (OpenPI line ≠ G2_pi)"
@@ -116,15 +126,8 @@ echo "GPU:    CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "smoke:  bash scripts/g2/deploy/smoke_infer_client.sh --port ${PORT}"
 echo "========================================"
 
-ARGS=(
-  scripts/serve_policy.py
-  --port="${PORT}"
-)
-[[ -n "${DEFAULT_PROMPT}" ]] && ARGS+=(--default-prompt="${DEFAULT_PROMPT}")
-ARGS+=(
-  policy:checkpoint
-  --policy.config="${CONFIG_NAME}"
+uv run scripts/serve_policy.py \
+  --port="${PORT}" \
+  policy:checkpoint \
+  --policy.config="${CONFIG_NAME}" \
   --policy.dir="${POLICY_DIR}"
-)
-
-uv run "${ARGS[@]}"
