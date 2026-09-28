@@ -72,7 +72,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/g2/train/train_full.sh  # → --preset full_
 | `pi05_g2_vr` | 全参微调；单 4090 通常 OOM，需多卡 FSDP |
 | `pi05_g2_vr_low_mem` | LoRA；smoke / 24GB |
 
-Delta：默认 `observation.ee` 作 state，`DeltaActions(9,-1,9,-1)`（夹爪绝对）。绝对 pose 训法：config 里 `use_delta_actions=False`。
+Delta：默认 `observation.pose` 作 state，`actions`←`action.pose`，`DeltaActions(9,-1,9,-1)`（夹爪绝对）。绝对 pose 训法：config 里 `use_delta_actions=False`（此时 state←`observation.joint`）。
 
 ## 部署（`scripts/g2/deploy/`）
 

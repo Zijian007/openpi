@@ -5,8 +5,8 @@ Expected training keys after RepackTransform (see LeRobotG2DataConfig):
 - observation/image              ← head camera
 - observation/wrist_image_left   ← left wrist
 - observation/wrist_image_right  ← right wrist
-- observation/state              ← 20-D EE when using delta actions, else 16-D joints
-- actions                        ← 20-D absolute pose commands (chunked by dataloader)
+- observation/state              ← 20-D observation.pose when using delta actions, else 16-D observation.joint
+- actions                        ← 20-D absolute action.pose (chunked by dataloader)
 - prompt                         ← language (from LeRobot task when prompt_from_task=True)
 
 Action layout (20-D): L/R each xyz(3) + rot6d(6) + gripper(1). Gripper close ∈ [0,1], 0=open.

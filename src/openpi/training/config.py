@@ -467,13 +467,15 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 class LeRobotG2DataConfig(DataConfigFactory):
     """G2 wholebody LeRobot v2.1 (pose + 3 cameras) → OpenPI π₀.₅.
 
-    Disk keys match wholebody export (`lerobot_format: v2.1`, `lerobot_action_space: pose`).
+    Disk keys match wholebody ``g2_lerobot_keys_v2`` export
+    (`observation.{joint,pose}`, `action.{joint,pose}`; no top-level ``action``).
     Put the dataset tree under ``$HF_LEROBOT_HOME/<repo_id>/`` (scripts/g2 sets
     ``HF_LEROBOT_HOME`` to ``~/work/openpi/data``).
 
-    When ``use_delta_actions=True`` (default), proprio ``state`` is **observation.ee**
-    (20-D) so ``DeltaActions`` computes chunk-relative pose: ``action[t:t+T] - ee[t]``.
-    Grippers stay absolute. Do **not** feed ``qa.command_minus_ee`` as actions.
+    When ``use_delta_actions=True`` (default), proprio ``state`` is **observation.pose**
+    (20-D) so ``DeltaActions`` computes chunk-relative pose:
+    ``action.pose[t:t+T] - observation.pose[t]``. Grippers stay absolute.
+    Do **not** feed ``qa.action_pose_minus_observation_pose`` as actions.
     """
 
     # Chunk-relative EE pose (OpenPI DeltaActions). False → absolute pose labels; state=joints.
@@ -481,8 +483,9 @@ class LeRobotG2DataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # Delta path needs EE as state (same dim/layout as pose actions). Absolute path uses joints.
-        state_key = "observation.ee" if self.use_delta_actions else "observation.state"
+        # Delta path needs measured pose as state (same dim/layout as pose actions).
+        # Absolute path uses joint proprio.
+        state_key = "observation.pose" if self.use_delta_actions else "observation.joint"
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
@@ -491,7 +494,7 @@ class LeRobotG2DataConfig(DataConfigFactory):
                         "observation/wrist_image_left": "observation.images.hand_left_color",
                         "observation/wrist_image_right": "observation.images.hand_right_color",
                         "observation/state": state_key,
-                        "actions": "action",
+                        "actions": "action.pose",
                         "prompt": "prompt",
                     }
                 )
@@ -518,8 +521,8 @@ class LeRobotG2DataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-            # LeRobot v2.1 column is singular ``action`` (not ``actions``).
-            action_sequence_keys=("action",),
+            # Disk column is ``action.pose`` (g2_lerobot_keys_v2; no top-level ``action``).
+            action_sequence_keys=("action.pose",),
         )
 
 
