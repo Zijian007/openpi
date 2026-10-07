@@ -5,7 +5,7 @@ Expected training keys after RepackTransform (see LeRobotG2DataConfig):
 - observation/image              ← head camera
 - observation/wrist_image_left   ← left wrist
 - observation/wrist_image_right  ← right wrist
-- observation/state              ← 20-D observation.pose when using delta actions, else 16-D observation.joint
+- observation/state              ← 20-D state.pose when using delta actions, else 16-D state.joint
 - actions                        ← 20-D absolute action.pose (chunked by dataloader)
 - prompt                         ← language (from LeRobot task when prompt_from_task=True)
 
@@ -20,10 +20,11 @@ import einops
 import numpy as np
 
 from openpi import transforms
+from openpi.g2_lerobot_contract import G2
 from openpi.models import model as _model
 
 # Effective G2 pose action dim (padded to model action_dim=32 by PadStatesAndActions).
-G2_ACTION_DIM = 20
+G2_ACTION_DIM = G2.pose.dim
 
 
 def make_g2_example() -> dict:

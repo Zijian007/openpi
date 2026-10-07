@@ -13,6 +13,7 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
+import openpi.g2_lerobot_contract as g2_contract
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
@@ -467,15 +468,17 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 class LeRobotG2DataConfig(DataConfigFactory):
     """G2 wholebody LeRobot v2.1 (pose + 3 cameras) → OpenPI π₀.₅.
 
-    Disk keys match wholebody ``g2_lerobot_keys_v2`` export
-    (`observation.{joint,pose}`, `action.{joint,pose}`; no top-level ``action``).
+    Disk keys come from ``openpi.g2_lerobot_contract.G2`` (a copy of
+    wholebody ``shared/g2_lerobot_contract.py``). Measured vectors are
+    ``state.joint`` / ``state.pose``; commands are ``action.joint`` /
+    ``action.pose``. Camera videos stay ``observation.images.*``.
     Put the dataset tree under ``$HF_LEROBOT_HOME/<repo_id>/`` (scripts/g2 sets
     ``HF_LEROBOT_HOME`` to ``~/work/openpi/data``).
 
-    When ``use_delta_actions=True`` (default), proprio ``state`` is **observation.pose**
-    (20-D) so ``DeltaActions`` computes chunk-relative pose:
-    ``action.pose[t:t+T] - observation.pose[t]``. Grippers stay absolute.
-    Do **not** feed ``qa.action_pose_minus_observation_pose`` as actions.
+    When ``use_delta_actions=True`` (default), proprio ``observation/state`` is
+    **state.pose** so ``DeltaActions`` computes chunk-relative pose:
+    ``action.pose[t:t+T] - state.pose[t]``. Grippers stay absolute.
+    Do **not** feed the QA residual column as actions.
     """
 
     # Chunk-relative EE pose (OpenPI DeltaActions). False → absolute pose labels; state=joints.
@@ -484,17 +487,19 @@ class LeRobotG2DataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Delta path needs measured pose as state (same dim/layout as pose actions).
-        # Absolute path uses joint proprio.
-        state_key = "observation.pose" if self.use_delta_actions else "observation.joint"
+        # Absolute path uses joint proprio. Left-hand keys are the π₀.₅ input contract.
+        g2 = g2_contract.G2
+        cams = g2.cameras
+        state_key = g2.columns.proprio_key(delta_actions=self.use_delta_actions)
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
                     {
-                        "observation/image": "observation.images.head_color",
-                        "observation/wrist_image_left": "observation.images.hand_left_color",
-                        "observation/wrist_image_right": "observation.images.hand_right_color",
+                        "observation/image": cams.feature_key(cams.head),
+                        "observation/wrist_image_left": cams.feature_key(cams.hand_left),
+                        "observation/wrist_image_right": cams.feature_key(cams.hand_right),
                         "observation/state": state_key,
-                        "actions": "action.pose",
+                        "actions": g2.columns.action_pose,
                         "prompt": "prompt",
                     }
                 )
@@ -507,8 +512,8 @@ class LeRobotG2DataConfig(DataConfigFactory):
         )
 
         if self.use_delta_actions:
-            # L/R: xyz+rot6d delta; gripper absolute. Mask length 20.
-            delta_action_mask = _transforms.make_bool_mask(9, -1, 9, -1)
+            # L/R: xyz+rot6d delta; gripper absolute. Mask follows pose layout.
+            delta_action_mask = g2.pose.delta_mask()
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
@@ -521,8 +526,7 @@ class LeRobotG2DataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-            # Disk column is ``action.pose`` (g2_lerobot_keys_v2; no top-level ``action``).
-            action_sequence_keys=("action.pose",),
+            action_sequence_keys=(g2.columns.action_pose,),
         )
 
 
@@ -1018,7 +1022,7 @@ _CONFIGS = [
         policy_metadata={
             "backend": "openpi",
             "robot": "g2",
-            "action_dim": 20,
+            "action_dim": g2_policy.G2_ACTION_DIM,
             "action_horizon": 50,
             "state_is_ee": True,
             "protocol": "openpi.websocket.v1",
@@ -1052,7 +1056,7 @@ _CONFIGS = [
         policy_metadata={
             "backend": "openpi",
             "robot": "g2",
-            "action_dim": 20,
+            "action_dim": g2_policy.G2_ACTION_DIM,
             "action_horizon": 50,
             "state_is_ee": True,
             "protocol": "openpi.websocket.v1",
