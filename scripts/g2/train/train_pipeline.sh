@@ -55,7 +55,7 @@ MAX_FRAMES=""
 
 # *********** GPU / 代理 ***********
 
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
 XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}"
 USE_PROXY=false
 
@@ -68,7 +68,7 @@ ASSETS_BASE_DIR="./assets"
 
 BATCH_SIZE="8"
 NUM_WORKERS="4"
-NUM_TRAIN_STEPS="30000"
+NUM_TRAIN_STEPS="50000"
 LOG_INTERVAL="50"
 SAVE_INTERVAL="5000"
 KEEP_PERIOD=""
@@ -77,8 +77,20 @@ FSDP_DEVICES=""
 
 # *********** checkpoint ***********
 
-OVERWRITE=true
-RESUME=false
+# 仅当 $CHECKPOINT_BASE_DIR/$CONFIG_NAME/$EXP_NAME/ 已存在时生效：
+#   OVERWRITE=true  → 整个目录删掉（含所有 step 和 wandb_id.txt），从 0 步重训
+#   RESUME=true     → 从目录里最新 step 续训（优化器/步数/W&B run 都接上），
+#                     并自动忽略 OVERWRITE；NUM_TRAIN_STEPS 须大于已训步数
+#   Ctrl+C / SIGTERM → 当前 step 结束后写入 checkpoint（目录名 = 内部 step）。
+#                     再按一次 Ctrl+C 会立刻退出，不保证写完。
+#                     下次 RESUME=true 从这一步继续，不必退回上一个 SAVE_INTERVAL
+#   两者都 false    → 报错退出
+# 续训超过 30000 步时 lr 会停在 decay_lr，需要的话加
+#   -- --lr-schedule.decay-steps=<新总步数>
+# 想用旧 ckpt 权重开新实验：换 EXP_NAME，RESUME=false，再加
+#   -- --weight-loader.params-path=<旧实验目录>/<step>/params
+OVERWRITE=false
+RESUME=true
 
 # *********** W&B ***********
 

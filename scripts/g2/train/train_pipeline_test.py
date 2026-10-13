@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from train_pipeline import resolve_config_name, should_skip_norm, wandb_enabled
+from train_pipeline import normalize_child_status, resolve_config_name, should_skip_norm, wandb_enabled
 
 
 class TrainPipelineResolveTest(unittest.TestCase):
@@ -53,6 +53,12 @@ class TrainPipelineResolveTest(unittest.TestCase):
         self.assertFalse(wandb_enabled("auto", "smoke"))
         self.assertTrue(wandb_enabled("auto", "low_mem"))
         self.assertFalse(wandb_enabled("off", "low_mem"))
+
+    def test_normalize_child_status(self) -> None:
+        self.assertEqual(normalize_child_status(0), 0)
+        self.assertEqual(normalize_child_status(130), 130)
+        self.assertEqual(normalize_child_status(-2), 130)
+        self.assertEqual(normalize_child_status(-15), 143)
 
 
 if __name__ == "__main__":

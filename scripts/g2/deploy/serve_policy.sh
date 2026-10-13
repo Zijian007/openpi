@@ -35,7 +35,7 @@ CONFIG_NAME="pi05_g2_vr_low_mem"
 
 # checkpoint 的 step 目录（…/<exp>/<step>），相对仓库根或绝对路径。
 # 空 = 在 checkpoints/$CONFIG_NAME/ 里选最近写入的实验，再取该实验数值最大的 step。
-POLICY_DIR="/home/zijianwang/work/openpi/checkpoints/pi05_g2_vr_low_mem/three_drinks_pick_and_place/29999"
+POLICY_DIR="/home/zijianwang/work/openpi/checkpoints/pi05_g2_vr_low_mem/vr_Sing_TeaPi/29999"
 
 CHECKPOINT_BASE_DIR="./checkpoints"
 
@@ -47,7 +47,9 @@ PORT=8001
 # 监听前用 224 假图 infer 两次：step0 付 JAX JIT（约 10–15s），step1 应落到稳态 ~100ms。
 # healthz 在 warmup 结束前不会 OK，所以首包不会再让真机付编译。排障可 --no-warmup。
 WARMUP=true
-RTC=false
+
+# 是否启用推理时RTC
+RTC=true
 RTC_HORIZON=10
 RTC_GUIDANCE=10.0
 

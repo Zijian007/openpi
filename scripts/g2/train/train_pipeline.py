@@ -14,6 +14,7 @@ import argparse
 import datetime as dt
 import os
 import shlex
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -207,11 +208,37 @@ def _build_train_command(
     return command
 
 
+def normalize_child_status(return_code: int) -> int:
+    """Map a negative wait status (-signal) to the conventional 128+signal exit code."""
+    if return_code < 0:
+        return 128 + (-return_code)
+    return return_code
+
+
 def _run_command(command: list[str], dry_run: bool) -> None:
     if dry_run:
         print(shlex.join(["uv", "run", *command]))
         return
-    subprocess.run([sys.executable, *command], cwd=PROJECT_ROOT, check=True)
+    # Ignore SIGINT/SIGTERM here so Ctrl+C reaches train.py, which saves the current
+    # step. This process keeps waiting until that checkpoint write finishes.
+    process = subprocess.Popen([sys.executable, *command], cwd=PROJECT_ROOT)
+    previous = {
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+    }
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        return_code = process.wait()
+    finally:
+        signal.signal(signal.SIGINT, previous[signal.SIGINT])
+        signal.signal(signal.SIGTERM, previous[signal.SIGTERM])
+    return_code = normalize_child_status(return_code)
+    if return_code in (128 + signal.SIGINT, 128 + signal.SIGTERM):
+        print("\nTraining stopped after saving an interrupt checkpoint.", file=sys.stderr)
+        raise SystemExit(return_code)
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, [sys.executable, *command])
 
 
 def main(argv: list[str] | None = None) -> None:

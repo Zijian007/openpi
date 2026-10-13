@@ -1,7 +1,9 @@
 import dataclasses
 import functools
 import logging
+import os
 import platform
+import signal
 from typing import Any
 
 import etils.epath as epath
@@ -191,8 +193,76 @@ def train_step(
     return new_state, info
 
 
+def checkpoint_step_to_save(
+    completed_step: int,
+    *,
+    start_step: int,
+    save_interval: int,
+    num_train_steps: int,
+    interrupt: bool,
+) -> int | None:
+    """Return the checkpoint directory step, or None when nothing should be written.
+
+    ``completed_step`` is ``train_state.step`` after the update. The directory
+    name uses that value, so it matches the step stored inside the checkpoint.
+    """
+    if completed_step <= start_step:
+        return None
+    on_schedule = completed_step % save_interval == 0 or completed_step == num_train_steps
+    if on_schedule or interrupt:
+        return completed_step
+    return None
+
+
+@dataclasses.dataclass
+class _StopRequest:
+    armed: bool = False
+    requested: bool = False
+    signum: int | None = None
+
+
+def _install_stop_handlers(stop: _StopRequest) -> dict[int, Any]:
+    """Save after the current step on the first SIGINT/SIGTERM. A second signal exits immediately."""
+
+    def _handle(signum: int, _frame: object) -> None:
+        if not stop.armed:
+            raise KeyboardInterrupt
+        if stop.requested:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+            return
+        stop.requested = True
+        stop.signum = signum
+        os.write(
+            2,
+            b"\nInterrupt received. Saving checkpoint after this step. Ctrl+C again exits immediately.\n",
+        )
+
+    previous = {
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+    }
+    signal.signal(signal.SIGINT, _handle)
+    signal.signal(signal.SIGTERM, _handle)
+    return previous
+
+
+def _restore_stop_handlers(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
 def main(config: _config.TrainConfig):
     init_logging()
+    stop = _StopRequest()
+    previous_handlers = _install_stop_handlers(stop)
+    try:
+        _train(config, stop)
+    finally:
+        _restore_stop_handlers(previous_handlers)
+
+
+def _train(config: _config.TrainConfig, stop: _StopRequest) -> None:
     logging.info(f"Running on: {platform.node()}")
 
     if config.batch_size % jax.device_count() != 0:
@@ -256,24 +326,57 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
-    for step in pbar:
-        with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
-        infos.append(info)
-        if step % config.log_interval == 0:
-            stacked_infos = common_utils.stack_forest(infos)
-            reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-            info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-            pbar.write(f"Step {step}: {info_str}")
-            wandb.log(reduced_info, step=step)
-            infos = []
-        batch = next(data_iter)
+    saved_step: int | None = None
+    # Armed only for the train loop. Ctrl+C during init still aborts immediately.
+    stop.armed = True
+    try:
+        for step in pbar:
+            with sharding.set_mesh(mesh):
+                train_state, info = ptrain_step(train_rng, train_state, batch)
+            infos.append(info)
+            # train_step increments the counter, so the completed step is the loop index plus one.
+            completed_step = step + 1
+            if completed_step % config.log_interval == 0:
+                stacked_infos = common_utils.stack_forest(infos)
+                reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+                info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+                pbar.write(f"Step {completed_step}: {info_str}")
+                wandb.log(reduced_info, step=completed_step)
+                infos = []
 
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+            save_step = checkpoint_step_to_save(
+                completed_step,
+                start_step=start_step,
+                save_interval=config.save_interval,
+                num_train_steps=config.num_train_steps,
+                interrupt=stop.requested,
+            )
+            if save_step is not None:
+                if stop.requested:
+                    logging.info("Saving interrupt checkpoint at step %d", save_step)
+                jax.block_until_ready(train_state)
+                _checkpoints.save_state(checkpoint_manager, train_state, data_loader, save_step)
+                saved_step = save_step
+            if stop.requested:
+                pbar.close()
+                break
+            batch = next(data_iter)
+    finally:
+        logging.info("Waiting for checkpoint manager to finish")
+        try:
+            checkpoint_manager.wait_until_finished()
+        finally:
+            stop.armed = False
 
-    logging.info("Waiting for checkpoint manager to finish")
-    checkpoint_manager.wait_until_finished()
+    if stop.requested:
+        if saved_step is None:
+            logging.info("Interrupted before a new checkpoint was written.")
+        else:
+            logging.info(
+                "Interrupt checkpoint is complete at step %d. Resume with RESUME=true to continue.",
+                saved_step,
+            )
+        raise SystemExit(128 + int(stop.signum if stop.signum is not None else signal.SIGINT))
 
 
 if __name__ == "__main__":
