@@ -4,10 +4,16 @@ import logging
 import time
 import traceback
 
+import numpy as np
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
 import websockets.asyncio.server as _server
 import websockets.frames
+
+try:
+    import cv2
+except Exception:  # pragma: no cover - serving env always has opencv
+    cv2 = None
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +34,9 @@ class WebsocketPolicyServer:
         self._policy = policy
         self._host = host
         self._port = port
-        self._metadata = metadata or {}
+        self._metadata = dict(metadata or {})
+        # Encoding is a transport capability, independent of the loaded policy.
+        self._metadata["image_encoding"] = "jpeg" if cv2 is not None else "raw"
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -57,7 +65,12 @@ class WebsocketPolicyServer:
                 start_time = time.monotonic()
                 raw = await websocket.recv()
                 obs_bytes = len(raw) if isinstance(raw, (bytes, bytearray)) else 0
+                process_start = time.monotonic()
                 obs = msgpack_numpy.unpackb(raw)
+                decode_start = time.monotonic()
+                unpack_ms = (decode_start - process_start) * 1000
+                _decode_jpeg_images(obs)
+                decode_ms = (time.monotonic() - decode_start) * 1000
 
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs)
@@ -65,6 +78,9 @@ class WebsocketPolicyServer:
 
                 action["server_timing"] = {
                     "infer_ms": infer_time * 1000,
+                    "unpack_ms": unpack_ms,
+                    "decode_ms": decode_ms,
+                    "process_ms": (time.monotonic() - process_start) * 1000,
                 }
                 if prev_total_time is not None:
                     # We can only record the last total time since we also want to include the send time.
@@ -79,11 +95,12 @@ class WebsocketPolicyServer:
                         policy_ms = None
                 image_shapes = _obs_image_shapes(obs)
                 logger.info(
-                    "infer infer_ms=%.1f policy_ms=%s obs_kb=%.1f images=%s",
+                    "infer infer_ms=%.1f policy_ms=%s obs_kb=%.1f images=%s decode_ms=%.1f",
                     infer_time * 1000.0,
                     "-" if policy_ms is None else f"{policy_ms:.1f}",
                     obs_bytes / 1024.0,
                     image_shapes or "-",
+                    decode_ms,
                 )
 
                 await websocket.send(packer.pack(action))
@@ -99,6 +116,32 @@ class WebsocketPolicyServer:
                     reason="Internal server error. Traceback included in previous frame.",
                 )
                 raise
+
+
+_JPEG_IMAGE_KEYS = (
+    "observation/image",
+    "observation/wrist_image_left",
+    "observation/wrist_image_right",
+)
+
+
+def _decode_jpeg_images(obs: object) -> None:
+    """Replace JPEG bytes with RGB uint8 HWC. Raw arrays are left unchanged.
+
+    The client encodes RGB via OpenCV, which stores JPEG as BGR, so decode swaps back.
+    """
+    if not isinstance(obs, dict):
+        return
+    for key in _JPEG_IMAGE_KEYS:
+        value = obs.get(key)
+        if not isinstance(value, (bytes, bytearray, memoryview)):
+            continue
+        if cv2 is None:
+            raise RuntimeError("JPEG observation received but OpenCV is not installed")
+        bgr = cv2.imdecode(np.frombuffer(value, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ValueError(f"failed to decode JPEG observation {key}")
+        obs[key] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
 def _obs_image_shapes(obs: object) -> str:
