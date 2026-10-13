@@ -6,6 +6,7 @@ import time
 
 import tyro
 
+from openpi.models.rtc import RTCConfig
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
@@ -53,6 +54,10 @@ class Args:
     record: bool = False
     # Run a dummy infer before listen so JAX JIT is not paid by the robot's first chunk.
     warmup: bool = False
+    # Inference-time guidance; uses the same checkpoint as ordinary inference.
+    rtc: bool = False
+    rtc_horizon: int = 10
+    rtc_guidance: float = 10.0
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -92,10 +97,17 @@ def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
     match args.policy:
         case Checkpoint():
+            if args.rtc and not args.policy.config.startswith("pi05_g2"):
+                raise ValueError("This RTC wire deployment requires a pi05_g2 configuration")
             return _policy_config.create_trained_policy(
-                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+                _config.get_config(args.policy.config),
+                args.policy.dir,
+                default_prompt=args.default_prompt,
+                rtc_config=RTCConfig(args.rtc_horizon, args.rtc_guidance) if args.rtc else None,
             )
         case Default():
+            if args.rtc:
+                raise ValueError("RTC requires an explicit G2 checkpoint")
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 
 
@@ -115,10 +127,14 @@ def _warmup(policy: _policy.Policy, args: Args) -> None:
         return
 
     obs = _g2_warmup_obs()
+    previous_actions = None
     logging.info("warmup start (JIT) images=224x224 prompt=%r", obs.get("prompt"))
-    for step in range(2):
+    for step in range(4 if args.rtc else 2):
+        if args.rtc and step == 2:
+            obs = {**obs, "rtc_enabled": True, "prev_chunk_left_over": previous_actions, "inference_delay": 2}
         t0 = time.monotonic()
         out = policy.infer(obs)
+        previous_actions = out["actions"]
         infer_ms = (time.monotonic() - t0) * 1000.0
         policy_ms = None
         timing = out.get("policy_timing") if isinstance(out, dict) else None

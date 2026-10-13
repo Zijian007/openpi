@@ -7,6 +7,7 @@ from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
 import openpi.models.gemma as _gemma
+from openpi.models.rtc import guided_velocity_torch
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 
@@ -374,7 +375,16 @@ class PI0Pytorch(nn.Module):
         return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
-    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
+    def sample_actions(
+        self,
+        device,
+        observation,
+        noise=None,
+        num_steps=10,
+        rtc_prefix=None,
+        rtc_weights=None,
+        rtc_max_guidance_weight=10.0,
+    ) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         bsize = observation.state.shape[0]
         if noise is None:
@@ -403,16 +413,25 @@ class PI0Pytorch(nn.Module):
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
 
         x_t = noise
+        use_rtc = rtc_prefix is not None and bool(torch.any(rtc_weights != 0))
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
         while time >= -dt / 2:
             expanded_time = time.expand(bsize)
-            v_t = self.denoise_step(
-                state,
-                prefix_pad_masks,
-                past_key_values,
-                x_t,
-                expanded_time,
-            )
+
+            def velocity(value, expanded_time=expanded_time):
+                return self.denoise_step(state, prefix_pad_masks, past_key_values, value, expanded_time)
+
+            if use_rtc:
+                v_t = guided_velocity_torch(
+                    velocity,
+                    x_t,
+                    time,
+                    rtc_prefix,
+                    rtc_weights,
+                    rtc_max_guidance_weight,
+                )
+            else:
+                v_t = velocity(x_t)
 
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t

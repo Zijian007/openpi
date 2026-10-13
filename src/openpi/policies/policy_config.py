@@ -6,6 +6,7 @@ from typing import Any
 import jax.numpy as jnp
 
 import openpi.models.model as _model
+from openpi.models.rtc import RTCConfig
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
 from openpi.training import checkpoints as _checkpoints
@@ -22,6 +23,7 @@ def create_trained_policy(
     default_prompt: str | None = None,
     norm_stats: dict[str, transforms.NormStats] | None = None,
     pytorch_device: str | None = None,
+    rtc_config: RTCConfig | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -43,6 +45,8 @@ def create_trained_policy(
         presence of "model.safensors" in the checkpoint directory.
     """
     repack_transforms = repack_transforms or transforms.Group()
+    if rtc_config is not None and train_config.model.model_type not in (_model.ModelType.PI0, _model.ModelType.PI05):
+        raise ValueError("RTC requires a Pi0/Pi05 flow policy")
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
 
     # Check if this is a PyTorch model by looking for model.safetensors
@@ -91,4 +95,5 @@ def create_trained_policy(
         metadata=train_config.policy_metadata,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
+        rtc_config=rtc_config,
     )

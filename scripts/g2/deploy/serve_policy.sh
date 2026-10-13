@@ -47,6 +47,9 @@ PORT=8001
 # 监听前用 224 假图 infer 两次：step0 付 JAX JIT（约 10–15s），step1 应落到稳态 ~100ms。
 # healthz 在 warmup 结束前不会 OK，所以首包不会再让真机付编译。排障可 --no-warmup。
 WARMUP=true
+RTC=false
+RTC_HORIZON=10
+RTC_GUIDANCE=10.0
 
 # prompt 只由域控随 observation 传入，服务端不设默认任务句。
 
@@ -63,6 +66,9 @@ Usage: bash scripts/g2/deploy/serve_policy.sh [options]
   --config-name NAME          TrainConfig name (default ${CONFIG_NAME})
   --port PORT                 WebSocket port (default ${PORT}; use 8001 if LeRobot holds 8000)
   --warmup | --no-warmup      dummy infer before listen (default ${WARMUP})
+  --rtc | --no-rtc            enable inference-time RTC (default ${RTC})
+  --rtc-horizon STEPS         overlap in policy steps (default ${RTC_HORIZON})
+  --rtc-guidance WEIGHT       maximum guidance weight (default ${RTC_GUIDANCE})
   --proxy | --no-proxy
   -h | --help
 EOF
@@ -89,6 +95,22 @@ while [[ $# -gt 0 ]]; do
     --no-warmup)
       WARMUP=false
       shift
+      ;;
+    --rtc)
+      RTC=true
+      shift
+      ;;
+    --no-rtc)
+      RTC=false
+      shift
+      ;;
+    --rtc-horizon)
+      RTC_HORIZON="$2"
+      shift 2
+      ;;
+    --rtc-guidance)
+      RTC_GUIDANCE="$2"
+      shift 2
       ;;
     --checkpoint-base-dir)
       CHECKPOINT_BASE_DIR="$2"
@@ -133,6 +155,8 @@ POLICY_DIR="$(uv run "${PICK_ARGS[@]}")"
 
 WARMUP_FLAG=--warmup
 [[ "${WARMUP}" == true ]] || WARMUP_FLAG=--no-warmup
+RTC_FLAG=--no-rtc
+[[ "${RTC}" == true ]] && RTC_FLAG=--rtc
 
 echo "========================================"
 echo "serve_policy  (OpenPI line ≠ G2_pi)"
@@ -140,6 +164,7 @@ echo "config: ${CONFIG_NAME}"
 echo "dir:    ${POLICY_DIR}"
 echo "port:   ${PORT}"
 echo "warmup: ${WARMUP}"
+echo "rtc:    ${RTC} (horizon=${RTC_HORIZON}, guidance=${RTC_GUIDANCE})"
 echo "jax_cache: ${JAX_COMPILATION_CACHE_DIR:-unset}"
 echo "GPU:    CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "smoke:  bash scripts/g2/deploy/smoke_infer_client.sh --port ${PORT}"
@@ -148,6 +173,9 @@ echo "========================================"
 uv run scripts/serve_policy.py \
   --port="${PORT}" \
   "${WARMUP_FLAG}" \
+  "${RTC_FLAG}" \
+  --rtc-horizon="${RTC_HORIZON}" \
+  --rtc-guidance="${RTC_GUIDANCE}" \
   policy:checkpoint \
   --policy.config="${CONFIG_NAME}" \
   --policy.dir="${POLICY_DIR}"

@@ -10,6 +10,7 @@ from typing_extensions import override
 from openpi.models import model as _model
 from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
+from openpi.models.rtc import guided_velocity_jax
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 
@@ -221,6 +222,9 @@ class Pi0(_model.BaseModel):
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
         noise: at.Float[at.Array, "b ah ad"] | None = None,
+        rtc_prefix: at.Float[at.Array, "b ah ad"] | None = None,
+        rtc_weights: at.Float[at.Array, "b ah ad"] | None = None,
+        rtc_max_guidance_weight: float = 10.0,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
@@ -236,8 +240,7 @@ class Pi0(_model.BaseModel):
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
 
-        def step(carry):
-            x_t, time = carry
+        def velocity(x_t, time):
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
                 observation, x_t, jnp.broadcast_to(time, batch_size)
             )
@@ -266,12 +269,32 @@ class Pi0(_model.BaseModel):
                 adarms_cond=[None, adarms_cond],
             )
             assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            # Restored checkpoints use bfloat16 projections, while the action
+            # state and its VJP are float32. Both cond branches need one dtype.
+            return self.action_out_proj(suffix_out[:, -self.action_horizon :]).astype(x_t.dtype)
 
+        def step(carry):
+            x_t, time = carry
+            if rtc_prefix is None:
+                v_t = velocity(x_t, time)
+            else:
+                v_t = jax.lax.cond(
+                    jnp.any(rtc_weights != 0),
+                    lambda x: guided_velocity_jax(
+                        lambda value: velocity(value, time),
+                        x,
+                        time,
+                        rtc_prefix,
+                        rtc_weights,
+                        rtc_max_guidance_weight,
+                    ),
+                    lambda x: velocity(x, time),
+                    x_t,
+                )
             return x_t + dt * v_t, time + dt
 
         def cond(carry):
-            x_t, time = carry
+            _x_t, time = carry
             # robust to floating-point error
             return time >= -dt / 2
 

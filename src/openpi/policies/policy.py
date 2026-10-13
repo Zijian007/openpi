@@ -15,6 +15,7 @@ from typing_extensions import override
 
 from openpi import transforms as _transforms
 from openpi.models import model as _model
+from openpi.models import rtc as _rtc
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
@@ -33,6 +34,7 @@ class Policy(BasePolicy):
         metadata: dict[str, Any] | None = None,
         pytorch_device: str = "cpu",
         is_pytorch: bool = False,
+        rtc_config: _rtc.RTCConfig | None = None,
     ):
         """Initialize the Policy.
 
@@ -51,9 +53,20 @@ class Policy(BasePolicy):
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
         self._sample_kwargs = sample_kwargs or {}
-        self._metadata = metadata or {}
+        self._metadata = dict(metadata or {})
+        self._rtc_config = rtc_config
+        self._metadata.update(rtc_supported=rtc_config is not None)
+        if rtc_config is not None:
+            self._metadata.update(
+                rtc_protocol=_rtc.PROTOCOL,
+                rtc_execution_horizon=rtc_config.execution_horizon,
+                rtc_max_guidance_weight=rtc_config.max_guidance_weight,
+            )
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
+        shape_config = model.config if is_pytorch else model
+        self._action_dim = shape_config.action_dim
+        self._action_horizon = shape_config.action_horizon
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -68,7 +81,51 @@ class Policy(BasePolicy):
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
+        rtc_enabled = inputs.pop("rtc_enabled", False)
+        if not isinstance(rtc_enabled, (bool, np.bool_)):
+            raise ValueError("rtc_enabled must be boolean")
+        leftover = inputs.pop("prev_chunk_left_over", None)
+        inference_delay = inputs.pop("inference_delay", 0)
+        if rtc_enabled and self._rtc_config is None:
+            raise ValueError("RTC requested but this policy was not started with RTC enabled")
+        wire_action_dim = 0
+        if rtc_enabled and leftover is not None:
+            leftover = np.asarray(leftover, dtype=np.float32)
+            expected_dim = self._metadata.get("action_dim", self._action_dim)
+            if (
+                leftover.ndim != 2
+                or len(leftover) == 0
+                or leftover.shape[1] != expected_dim
+                or not np.isfinite(leftover).all()
+            ):
+                raise ValueError("RTC leftover must be finite absolute actions (T, wire_action_dim)")
+            wire_action_dim = leftover.shape[1]
+            # The SAME training input pipeline reanchors DeltaActions to this
+            # observation, normalizes using checkpoint stats, and pads dimensions.
+            inputs["actions"] = leftover.copy()
         inputs = self._input_transform(inputs)
+        transformed_prefix = inputs.pop("actions", None)
+        sample_kwargs = dict(self._sample_kwargs)
+        if self._rtc_config is not None:
+            prefix, weights = _rtc.prepare_prefix(
+                transformed_prefix if rtc_enabled else None,
+                action_horizon=self._action_horizon,
+                action_dim=self._action_dim,
+                wire_action_dim=wire_action_dim,
+                inference_delay=inference_delay if rtc_enabled else 0,
+                config=self._rtc_config,
+            )
+            # Fixed shapes even for the first chunk; warmup compiles the guided branch.
+            if self._is_pytorch_model:
+                prefix = torch.from_numpy(prefix).to(self._pytorch_device)[None, ...]
+                weights = torch.from_numpy(weights).to(self._pytorch_device)[None, ...]
+            else:
+                prefix, weights = jnp.asarray(prefix)[None, ...], jnp.asarray(weights)[None, ...]
+            sample_kwargs.update(
+                rtc_prefix=prefix,
+                rtc_weights=weights,
+                rtc_max_guidance_weight=self._rtc_config.max_guidance_weight,
+            )
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
@@ -79,7 +136,6 @@ class Policy(BasePolicy):
             sample_rng_or_pytorch_device = self._pytorch_device
 
         # Prepare kwargs for sample_actions
-        sample_kwargs = dict(self._sample_kwargs)
         if noise is not None:
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
 
