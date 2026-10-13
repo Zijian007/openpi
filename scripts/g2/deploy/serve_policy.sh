@@ -50,7 +50,7 @@ WARMUP=true
 
 # 是否启用推理时RTC
 RTC=true
-RTC_HORIZON=10
+RTC_SOFT_OVERLAP_STEPS=5
 RTC_GUIDANCE=10.0
 
 # prompt 只由域控随 observation 传入，服务端不设默认任务句。
@@ -69,7 +69,7 @@ Usage: bash scripts/g2/deploy/serve_policy.sh [options]
   --port PORT                 WebSocket port (default ${PORT}; use 8001 if LeRobot holds 8000)
   --warmup | --no-warmup      dummy infer before listen (default ${WARMUP})
   --rtc | --no-rtc            enable inference-time RTC (default ${RTC})
-  --rtc-horizon STEPS         overlap in policy steps (default ${RTC_HORIZON})
+  --rtc-soft-overlap-steps N  soft guidance steps after inference delay (default ${RTC_SOFT_OVERLAP_STEPS})
   --rtc-guidance WEIGHT       maximum guidance weight (default ${RTC_GUIDANCE})
   --proxy | --no-proxy
   -h | --help
@@ -106,9 +106,13 @@ while [[ $# -gt 0 ]]; do
       RTC=false
       shift
       ;;
-    --rtc-horizon)
-      RTC_HORIZON="$2"
+    --rtc-soft-overlap-steps)
+      RTC_SOFT_OVERLAP_STEPS="$2"
       shift 2
+      ;;
+    --rtc-horizon)
+      echo "--rtc-horizon was an absolute cutoff and has been removed. Use --rtc-soft-overlap-steps (e.g. 5); do not copy the old horizon value." >&2
+      exit 2
       ;;
     --rtc-guidance)
       RTC_GUIDANCE="$2"
@@ -166,7 +170,7 @@ echo "config: ${CONFIG_NAME}"
 echo "dir:    ${POLICY_DIR}"
 echo "port:   ${PORT}"
 echo "warmup: ${WARMUP}"
-echo "rtc:    ${RTC} (horizon=${RTC_HORIZON}, guidance=${RTC_GUIDANCE})"
+echo "rtc:    ${RTC} (soft_overlap_steps=${RTC_SOFT_OVERLAP_STEPS}, guidance=${RTC_GUIDANCE})"
 echo "jax_cache: ${JAX_COMPILATION_CACHE_DIR:-unset}"
 echo "GPU:    CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "smoke:  bash scripts/g2/deploy/smoke_infer_client.sh --port ${PORT}"
@@ -176,7 +180,7 @@ uv run scripts/serve_policy.py \
   --port="${PORT}" \
   "${WARMUP_FLAG}" \
   "${RTC_FLAG}" \
-  --rtc-horizon="${RTC_HORIZON}" \
+  --rtc-soft-overlap-steps="${RTC_SOFT_OVERLAP_STEPS}" \
   --rtc-guidance="${RTC_GUIDANCE}" \
   policy:checkpoint \
   --policy.config="${CONFIG_NAME}" \

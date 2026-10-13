@@ -97,12 +97,13 @@ class WebsocketPolicyServer:
                         policy_ms = None
                 image_shapes = _obs_image_shapes(obs)
                 logger.info(
-                    "infer infer_ms=%.1f policy_ms=%s obs_kb=%.1f images=%s decode_ms=%.1f",
+                    "infer infer_ms=%.1f policy_ms=%s obs_kb=%.1f images=%s decode_ms=%.1f rtc=%s",
                     infer_time * 1000.0,
                     "-" if policy_ms is None else f"{policy_ms:.1f}",
                     obs_bytes / 1024.0,
                     image_shapes or "-",
                     decode_ms,
+                    action.get("rtc_info"),
                 )
 
                 await websocket.send(packer.pack(action))

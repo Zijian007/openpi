@@ -15,16 +15,16 @@ PROTOCOL = "openpi.rtc.v1"
 
 @dataclasses.dataclass(frozen=True)
 class RTCConfig:
-    execution_horizon: int = 10
+    soft_overlap_steps: int = 5
     max_guidance_weight: float = 10.0
 
     def __post_init__(self):
         if (
-            isinstance(self.execution_horizon, bool)
-            or not isinstance(self.execution_horizon, (int, np.integer))
-            or self.execution_horizon <= 0
+            isinstance(self.soft_overlap_steps, bool)
+            or not isinstance(self.soft_overlap_steps, (int, np.integer))
+            or self.soft_overlap_steps < 0
         ):
-            raise ValueError("RTC execution_horizon must be positive")
+            raise ValueError("RTC soft_overlap_steps must be a nonnegative integer")
         if not np.isfinite(self.max_guidance_weight) or self.max_guidance_weight <= 0:
             raise ValueError("RTC max_guidance_weight must be finite and positive")
 
@@ -52,12 +52,15 @@ def prepare_prefix(
     if inference_delay >= action_horizon or inference_delay > valid:
         raise ValueError("RTC delay exceeds the available prefix/prediction horizon")
     prefix[:valid] = actions[:valid]
-    end = min(valid, max(config.execution_horizon, inference_delay))
-    # Keep committed steps at full weight, then decay over the soft overlap.
+    end = min(valid, inference_delay + config.soft_overlap_steps)
+    # Guide the estimated committed prefix, then a fixed-width soft overlap.
+    # When the available prefix is short, keep the original decay slope and
+    # mask unavailable steps; do not stretch/compress the transition.
     temporal = np.zeros(action_horizon, dtype=np.float32)
     temporal[:inference_delay] = 1.0
     if end > inference_delay:
-        temporal[inference_delay:end] = np.linspace(1, 0, end - inference_delay + 2)[1:-1]
+        offsets = np.arange(1, end - inference_delay + 1, dtype=np.float32)
+        temporal[inference_delay:end] = 1 - offsets / (config.soft_overlap_steps + 1)
     weights[:, :wire_action_dim] = temporal[:, None]
     return prefix, weights
 

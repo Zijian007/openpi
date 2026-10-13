@@ -58,6 +58,12 @@ def test_absolute_prefix_reanchors_normalizes_and_round_trips(quantiles):
     absolute = np.full((6, 20), 3.0, dtype=np.float32)
     obs.update(rtc_enabled=True, prev_chunk_left_over=absolute, inference_delay=2)
     out = policy.infer(obs)
+    assert policy.metadata["rtc_soft_overlap_steps"] == 5
+    assert policy.metadata["rtc_prefix_weighting"] == "delay_plus_soft_overlap"
+    assert out["rtc_info"]["soft_overlap_applied"] == 4
+    assert out["rtc_info"]["soft_overlap_requested"] == 5
+    expected = np.array([1, 1, 5/6, 4/6, 3/6, 2/6, 0], dtype=np.float32)
+    np.testing.assert_allclose(echo_model.kwargs["rtc_weights"].cpu().numpy()[0, :7, 0], expected, atol=1e-7)
     np.testing.assert_allclose(out["actions"][:6], absolute, atol=1e-6)
     # New measured state must change the model-space prefix, not its absolute result.
     old_prefix = echo_model.kwargs["rtc_prefix"].clone()

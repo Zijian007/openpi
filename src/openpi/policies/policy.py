@@ -59,7 +59,8 @@ class Policy(BasePolicy):
         if rtc_config is not None:
             self._metadata.update(
                 rtc_protocol=_rtc.PROTOCOL,
-                rtc_execution_horizon=rtc_config.execution_horizon,
+                rtc_soft_overlap_steps=rtc_config.soft_overlap_steps,
+                rtc_prefix_weighting="delay_plus_soft_overlap",
                 rtc_max_guidance_weight=rtc_config.max_guidance_weight,
             )
         self._is_pytorch_model = is_pytorch
@@ -106,6 +107,7 @@ class Policy(BasePolicy):
         inputs = self._input_transform(inputs)
         transformed_prefix = inputs.pop("actions", None)
         sample_kwargs = dict(self._sample_kwargs)
+        rtc_info = None
         if self._rtc_config is not None:
             prefix, weights = _rtc.prepare_prefix(
                 transformed_prefix if rtc_enabled else None,
@@ -115,6 +117,14 @@ class Policy(BasePolicy):
                 inference_delay=inference_delay if rtc_enabled else 0,
                 config=self._rtc_config,
             )
+            valid = 0 if transformed_prefix is None or not rtc_enabled else min(len(transformed_prefix), self._action_horizon)
+            guided_delay = int(inference_delay) if valid else 0
+            rtc_info = {
+                "delay_steps": guided_delay,
+                "prefix_steps": valid,
+                "soft_overlap_requested": self._rtc_config.soft_overlap_steps,
+                "soft_overlap_applied": max(0, min(self._rtc_config.soft_overlap_steps, valid - guided_delay)),
+            }
             # Fixed shapes even for the first chunk; warmup compiles the guided branch.
             if self._is_pytorch_model:
                 prefix = torch.from_numpy(prefix).to(self._pytorch_device)[None, ...]
@@ -159,6 +169,8 @@ class Policy(BasePolicy):
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }
+        if rtc_info is not None:
+            outputs["rtc_info"] = rtc_info
         return outputs
 
     @property

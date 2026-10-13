@@ -12,7 +12,7 @@ def test_prefix_keeps_committed_steps_and_masks_padding():
         action_dim=32,
         wire_action_dim=20,
         inference_delay=2,
-        config=rtc.RTCConfig(execution_horizon=4),
+        config=rtc.RTCConfig(soft_overlap_steps=2),
     )
     np.testing.assert_allclose(weights[:2, :20], 1)
     np.testing.assert_allclose(weights[2:4, 0], [2 / 3, 1 / 3])
@@ -34,17 +34,42 @@ def test_invalid_delay_is_rejected(delay):
         )
 
 
-def test_committed_overlap_can_exceed_soft_horizon():
+@pytest.mark.parametrize("delay", [0, 7, 13, 18])
+def test_soft_overlap_width_is_independent_of_inference_delay(delay):
     _, weights = rtc.prepare_prefix(
-        np.ones((20, 32)),
+        np.ones((30, 32)),
         action_horizon=50,
         action_dim=32,
         wire_action_dim=20,
-        inference_delay=12,
-        config=rtc.RTCConfig(execution_horizon=10),
+        inference_delay=delay,
+        config=rtc.RTCConfig(soft_overlap_steps=5),
     )
-    np.testing.assert_allclose(weights[:12, :20], 1)
-    assert not weights[12:].any()
+    np.testing.assert_allclose(weights[:delay, :20], 1)
+    np.testing.assert_allclose(weights[delay:delay + 5, 0], [5/6, 4/6, 3/6, 2/6, 1/6], atol=1e-7)
+    assert not weights[delay + 5:].any()
+    assert not weights[:, 20:].any()
+
+
+def test_short_prefix_masks_missing_steps_without_changing_decay_slope():
+    _, weights = rtc.prepare_prefix(np.ones((15, 32)), action_horizon=50, action_dim=32,
+                                   wire_action_dim=20, inference_delay=13,
+                                   config=rtc.RTCConfig(soft_overlap_steps=5))
+    np.testing.assert_allclose(weights[13:15, 0], [5/6, 4/6], atol=1e-7)
+    assert not weights[15:].any()
+
+
+def test_zero_soft_overlap_is_explicitly_supported():
+    _, weights = rtc.prepare_prefix(np.ones((20, 32)), action_horizon=50, action_dim=32,
+                                   wire_action_dim=20, inference_delay=13,
+                                   config=rtc.RTCConfig(soft_overlap_steps=0))
+    np.testing.assert_array_equal(weights[:13, :20], 1)
+    assert not weights[13:].any()
+
+
+@pytest.mark.parametrize("steps", [-1, 1.5, True])
+def test_invalid_soft_overlap_is_rejected(steps):
+    with pytest.raises(ValueError, match="soft_overlap_steps"):
+        rtc.RTCConfig(soft_overlap_steps=steps)
 
 
 def _guidance_example():

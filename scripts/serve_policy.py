@@ -56,7 +56,8 @@ class Args:
     warmup: bool = False
     # Inference-time guidance; uses the same checkpoint as ordinary inference.
     rtc: bool = False
-    rtc_horizon: int = 10
+    # Width of decaying prefix guidance AFTER the estimated inference delay.
+    rtc_soft_overlap_steps: int = 5
     rtc_guidance: float = 10.0
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
@@ -103,7 +104,8 @@ def create_policy(args: Args) -> _policy.Policy:
                 _config.get_config(args.policy.config),
                 args.policy.dir,
                 default_prompt=args.default_prompt,
-                rtc_config=RTCConfig(args.rtc_horizon, args.rtc_guidance) if args.rtc else None,
+                rtc_config=RTCConfig(soft_overlap_steps=args.rtc_soft_overlap_steps,
+                                     max_guidance_weight=args.rtc_guidance) if args.rtc else None,
             )
         case Default():
             if args.rtc:

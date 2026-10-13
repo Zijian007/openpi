@@ -12,12 +12,13 @@ Use the same config and step directory as ordinary inference:
 bash scripts/g2/deploy/serve_policy.sh \
   --config-name pi05_g2_vr_low_mem \
   --policy-dir /path/to/existing/checkpoint/step \
-  --port 8001 --rtc --rtc-horizon 10 --rtc-guidance 10
+  --port 8001 --rtc --rtc-soft-overlap-steps 5 --rtc-guidance 10
 ```
 
 Warmup runs both ordinary and guided inference before opening the port. Metadata
-advertises `rtc_supported`, `rtc_protocol`, `rtc_execution_horizon`, and
-`rtc_max_guidance_weight`. Starting without `--rtc` keeps ordinary inference;
+advertises `rtc_supported`, `rtc_protocol`, `rtc_soft_overlap_steps`,
+`rtc_prefix_weighting=delay_plus_soft_overlap`, and `rtc_max_guidance_weight`.
+Starting without `--rtc` keeps ordinary inference;
 clients that request RTC will fail explicitly rather than silently ignoring it.
 
 ## wholebody client
@@ -49,10 +50,17 @@ guidance weight. Nothing is subtracted or normalized on the domain controller.
 
 Inside each flow step the endpoint estimate is `x_t - t * velocity(x_t)`. RTC
 uses its full vector-Jacobian product to guide that endpoint toward the prefix;
-it does not detach the velocity Jacobian. Committed steps use weight one, then
-a linear soft overlap decays to zero. Guidance is capped by `--rtc-guidance`.
-`--rtc-horizon` is the soft overlap end in policy steps; a longer committed delay
-extends the fully weighted prefix beyond this setting.
+it does not detach the velocity Jacobian. Estimated committed steps use weight
+one, followed by `--rtc-soft-overlap-steps` linearly decaying weights. For delay
+13 and soft overlap 5, weights are 1 for steps 0–12, then 5/6, 4/6, 3/6, 2/6,
+1/6 for steps 13–17, then zero. The overlap width remains 5 when delay changes.
+If the prefix ends early, unavailable weights are masked without changing the
+decay slope. The response's `rtc_info` reports requested/applied overlap length.
+Guidance is capped by `--rtc-guidance`; weight one is not a hard action clamp.
+
+The old absolute `--rtc-horizon` has been removed. Migrate to an explicit soft
+width, e.g. 5; copying an old horizon of 18 into the new parameter would change
+its meaning. The wire fields and `openpi.rtc.v1` protocol are unchanged.
 
 `INFERENCE_DELAY=0` estimates the delay from the largest of the last five measured
 observation-to-inference latencies, rounded up to policy steps plus one step of
@@ -62,10 +70,19 @@ and only that many new-chunk steps are discarded. The initial chunk retains its
 prefix until execution begins. If committed actions or the prediction horizon
 expire, inference fails and the runtime applies its existing halt behavior.
 
-At 30 Hz, horizon 50 and refill ratio 0.5 leave about 0.83 s to produce the next
-chunk. Increase `chunk_refill_ratio` if measured guided inference approaches this
-buffer; do not change `policy_hz` independently of the checkpoint's training FPS.
-Logs include `[pi05 RTC] prefix_steps=... estimated_delay=... real_delay=...`.
+Client `replan_interval_steps` independently sets the nominal interval between
+observation starts. With chunk 50 and interval 13, refill triggers at 37 remaining
+steps; elapsed steps trimmed on arrival count toward the interval. At 30 Hz this
+is about 0.433 s. If inference takes longer, request the next chunk immediately
+after arrival; there is only one request in flight. The scheduler validates the
+interval against the server-resolved chunk size. Null uses `chunk_refill_ratio`;
+an explicit interval overrides the ratio. Neither setting changes model horizon.
+
+The wholebody baseline uses interval 13, delay floor 13 and bridge 0.08 s; the
+server defaults to soft overlap 5 and guidance 10. These are separate controls,
+not a single execution horizon. Do not change `policy_hz` independently of the
+checkpoint's training FPS. Logs include prefix/estimated/actual delay plus
+`[pi05 RTC guidance]` with applied soft overlap, and warn if it is truncated.
 
 ## Tests
 
