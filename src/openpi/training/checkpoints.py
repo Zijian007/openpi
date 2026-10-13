@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures as futures
 import dataclasses
 import logging
+from pathlib import Path
 from typing import Protocol
 
 from etils import epath
@@ -107,8 +108,45 @@ def restore_state(
     return _merge_params(restored["train_state"], restored["params"])
 
 
-def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _normalize.NormStats] | None:
-    norm_stats_dir = epath.Path(assets_dir) / asset_id
+def find_norm_stats_dir(assets_dir: epath.Path | str, asset_id: str | None = None) -> epath.Path:
+    """Return the directory that contains ``norm_stats.json``.
+
+    Training saves stats under ``assets/<asset_id>/``, and ``asset_id`` defaults to
+    the LeRobot ``repo_id``. Serving reconstructs a TrainConfig whose default
+    ``repo_id`` may differ from the dataset used for that checkpoint (nested
+    paths such as ``vr/Sing_TeaPi/lerobot_v21``). Prefer ``asset_id`` when that
+    file exists; otherwise use the only copy in the checkpoint.
+    """
+    assets_dir = epath.Path(assets_dir)
+    if asset_id:
+        preferred = assets_dir / asset_id
+        if (preferred / "norm_stats.json").exists():
+            return preferred
+
+    root = Path(str(assets_dir))
+    matches = sorted(path.parent for path in root.glob("**/norm_stats.json")) if root.is_dir() else []
+    if len(matches) == 1:
+        found = epath.Path(matches[0])
+        if asset_id:
+            logging.warning(
+                "Norm stats not found at %s; using the only copy under the checkpoint: %s",
+                assets_dir / asset_id,
+                found,
+            )
+        return found
+
+    expected = assets_dir / asset_id if asset_id else assets_dir
+    if matches:
+        listed = "\n  ".join(str(path) for path in matches)
+        raise FileNotFoundError(
+            f"Norm stats not found at {expected}/norm_stats.json. "
+            f"Multiple copies exist under {assets_dir}:\n  {listed}"
+        )
+    raise FileNotFoundError(f"Norm stats file not found at: {expected}/norm_stats.json")
+
+
+def load_norm_stats(assets_dir: epath.Path | str, asset_id: str | None = None) -> dict[str, _normalize.NormStats] | None:
+    norm_stats_dir = find_norm_stats_dir(assets_dir, asset_id)
     norm_stats = _normalize.load(norm_stats_dir)
     logging.info(f"Loaded norm stats from {norm_stats_dir}")
     return norm_stats

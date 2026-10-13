@@ -37,10 +37,10 @@ CONFIG_NAME="pi05_g2_vr_low_mem"
 
 # 实验名 = checkpoint 子目录 = W&B run 名。
 # 空 = 自动 g2_vr_pi05_YYYYMMDD_HHMMSS（smoke 为 g2_vr_smoke_...）。
-EXP_NAME=""
+EXP_NAME="three_drinks_pick_and_place"
 
 # 数据集目录名：$HF_LEROBOT_HOME/$REPO_ID/。会传给 --data.repo-id。
-REPO_ID="g2_vr_lerobot_v21"
+REPO_ID="vr/three_drinks_pick_and_place/lerobot_v21"
 
 # *********** norm stats ***********
 
@@ -57,7 +57,7 @@ MAX_FRAMES=""
 
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}"
-USE_PROXY=true
+USE_PROXY=false
 
 # *********** 路径 ***********
 
