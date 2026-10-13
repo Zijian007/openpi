@@ -9,6 +9,61 @@ import websockets.asyncio.server
 from websockets.sync.client import connect
 
 from openpi.serving.websocket_policy_server import WebsocketPolicyServer
+from openpi.serving.websocket_policy_server import _warmup_jpeg_transport
+
+
+def test_jpeg_warmup_decodes_three_images_twice_without_policy():
+    from openpi.serving.websocket_policy_server import _decode_jpeg_images
+
+    decoded = []
+
+    def decode(obs):
+        assert len(obs) == 3
+        assert all(isinstance(image, bytes) for image in obs.values())
+        _decode_jpeg_images(obs)
+        decoded.append(obs)
+
+    with patch("openpi.serving.websocket_policy_server._decode_jpeg_images", side_effect=decode):
+        _warmup_jpeg_transport()
+    assert len(decoded) == 2
+    for obs in decoded:
+        assert all(image.shape == (224, 224, 3) and image.dtype == np.uint8 for image in obs.values())
+
+
+def test_jpeg_warmup_skips_without_opencv():
+    with (
+        patch("openpi.serving.websocket_policy_server.cv2", None),
+        patch("openpi.serving.websocket_policy_server._decode_jpeg_images") as decode,
+    ):
+        _warmup_jpeg_transport()
+    decode.assert_not_called()
+
+
+def test_transport_warmup_finishes_before_binding_port():
+    events = []
+
+    class Listener:
+        async def __aenter__(self):
+            events.append("listen")
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def serve_forever(self):
+            events.append("serve")
+
+    def bind(*args, **kwargs):
+        events.append("bind")
+        return Listener()
+
+    with (
+        patch("openpi.serving.websocket_policy_server._warmup_jpeg_transport",
+              side_effect=lambda: events.append("warmup")),
+        patch("openpi.serving.websocket_policy_server._server.serve", side_effect=bind),
+    ):
+        asyncio.run(WebsocketPolicyServer(None).run())
+    assert events == ["warmup", "bind", "listen", "serve"]
 
 
 def test_transport_owns_encoding_capability():

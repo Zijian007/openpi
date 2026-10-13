@@ -43,6 +43,8 @@ class WebsocketPolicyServer:
         asyncio.run(self.run())
 
     async def run(self):
+        # Run on the same thread as request handlers, before healthz/listen is available.
+        _warmup_jpeg_transport()
         async with _server.serve(
             self._handler,
             self._host,
@@ -123,6 +125,26 @@ _JPEG_IMAGE_KEYS = (
     "observation/wrist_image_left",
     "observation/wrist_image_right",
 )
+
+
+def _warmup_jpeg_transport() -> None:
+    """Pay codec initialization before the robot's first observation arrives."""
+    if cv2 is None:
+        logger.info("JPEG transport warmup skipped (OpenCV unavailable; raw images only)")
+        return
+    start = time.monotonic()
+    bgr = np.random.default_rng(0).integers(0, 256, (224, 224, 3), dtype=np.uint8)
+    ok, buffer = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    if not ok:
+        raise RuntimeError("JPEG transport warmup encode failed")
+    packed = msgpack_numpy.packb(dict.fromkeys(_JPEG_IMAGE_KEYS, buffer.tobytes()))
+    for step in range(2):
+        obs = msgpack_numpy.unpackb(packed)
+        decode_start = time.monotonic()
+        _decode_jpeg_images(obs)
+        logger.info("JPEG transport warmup step=%d decode_ms=%.3f images=3x224x224",
+                    step + 1, (time.monotonic() - decode_start) * 1000)
+    logger.info("JPEG transport warmup complete total_ms=%.3f", (time.monotonic() - start) * 1000)
 
 
 def _decode_jpeg_images(obs: object) -> None:
