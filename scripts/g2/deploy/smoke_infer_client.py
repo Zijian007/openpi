@@ -12,8 +12,7 @@ Then::
     uv run scripts/g2/deploy/smoke_infer_client.py
     # or: bash scripts/g2/deploy/smoke_infer_client.sh
 
-Observation keys match ``openpi.policies.g2_policy.make_g2_example`` / G2Inputs.
-Not compatible with G2_pi policy_server or wholebody lerobot_pi05_client protocol.
+Uses g2.policy.v2, identical to G2_pi and the G2 robot client.
 """
 
 from __future__ import annotations
@@ -26,7 +25,8 @@ import urllib.request
 
 import numpy as np
 import tyro
-from openpi_client import websocket_client_policy
+from g2_policy_protocol import codec, protocol
+from websockets.sync.client import connect
 
 from openpi.policies import g2_policy
 
@@ -120,22 +120,28 @@ def main(args: Args) -> int:
     logger.info("waiting for serve_policy at ws://%s:%s ...", args.host, args.port)
     _wait_healthz(args.host, args.port, args.connect_timeout_s)
 
-    client = websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
-    meta = client.get_server_metadata()
-    logger.info("server metadata: %s", meta)
-
-    for i in range(args.num_infer):
-        obs = _make_obs(args)
-        t0 = time.monotonic()
-        out = client.infer(obs)
-        dt_ms = (time.monotonic() - t0) * 1000.0
-        if not isinstance(out, dict) or "actions" not in out:
-            raise AssertionError(
-                f"step {i}: unexpected response keys={list(out) if isinstance(out, dict) else type(out)}"
-            )
-        _check_actions(out["actions"], step=i)
-        timing = out.get("server_timing") or out.get("policy_timing") or {}
-        logger.info("step %d: roundtrip=%.1f ms  timing=%s", i, dt_ms, timing)
+    with connect(f"ws://{args.host}:{args.port}", compression=None, max_size=None) as client:
+        meta = codec.loads(client.recv(), encoding="msgpack")
+        protocol.validate_metadata(meta)
+        logger.info("server metadata: %s", meta)
+        for i in range(args.num_infer):
+            native = _make_obs(args)
+            mapping = dict(zip(protocol.CAMERA_IDS, (
+                "observation/image", "observation/wrist_image_left", "observation/wrist_image_right")))
+            images = {key: native[mapping[key]] for key in meta["required_cameras"]}
+            if meta["image_encoding"] == "jpeg":
+                import cv2
+                images = {key: cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))[1].tobytes()
+                          for key, image in images.items()}
+            request = protocol.build_request(request_id=i, prompt=args.prompt,
+                state=native["observation/state"], images=images, metadata=meta)
+            t0 = time.monotonic()
+            client.send(codec.dumps(request))
+            out = codec.loads(client.recv())
+            actions = protocol.parse_response(out, request_id=i)
+            _check_actions(actions, step=i)
+            logger.info("step %d: roundtrip=%.1f ms timing=%s", i,
+                        (time.monotonic()-t0)*1000, out.get("server_timing", {}))
 
     logger.info(
         "OK: %d infer(s) passed (horizon=%d, action_dim>=%d)",

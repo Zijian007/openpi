@@ -1129,6 +1129,27 @@ http = [
 ]
 
 [[package]]
+name = "g2-policy-protocol"
+version = "0.4.1"
+source = { directory = "../g2-policy-protocol" }
+dependencies = [
+    { name = "msgpack" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "msgpack", specifier = ">=1.0" },
+    { name = "numpy", specifier = ">=1.24" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "jsonschema", specifier = ">=4" },
+    { name = "pytest", specifier = ">=7" },
+]
+
+[[package]]
 name = "gast"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3095,6 +3116,7 @@ dependencies = [
     { name = "flatbuffers" },
     { name = "flax" },
     { name = "fsspec", extra = ["gcs"] },
+    { name = "g2-policy-protocol" },
     { name = "gym-aloha" },
     { name = "imageio" },
     { name = "jax", extra = ["cuda12"] },
@@ -3147,6 +3169,7 @@ requires-dist = [
     { name = "flatbuffers", specifier = ">=24.3.25" },
     { name = "flax", specifier = "==0.10.2" },
     { name = "fsspec", extras = ["gcs"], specifier = ">=2024.6.0" },
+    { name = "g2-policy-protocol", directory = "../g2-policy-protocol" },
     { name = "gym-aloha", specifier = ">=0.1.1" },
     { name = "imageio", specifier = ">=2.36.1" },
     { name = "jax", extras = ["cuda12"], specifier = "==0.5.3" },

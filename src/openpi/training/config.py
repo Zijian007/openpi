@@ -1034,7 +1034,7 @@ _CONFIGS = [
             "action_dim": g2_policy.G2_ACTION_DIM,
             "action_horizon": 50,
             "state_is_ee": True,
-            "protocol": "openpi.websocket.v1",
+            "policy_hz": 30.0,
         },
     ),
     TrainConfig(
@@ -1068,7 +1068,7 @@ _CONFIGS = [
             "action_dim": g2_policy.G2_ACTION_DIM,
             "action_horizon": 50,
             "state_is_ee": True,
-            "protocol": "openpi.websocket.v1",
+            "policy_hz": 30.0,
         },
     ),
     #

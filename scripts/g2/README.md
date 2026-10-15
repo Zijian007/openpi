@@ -121,3 +121,12 @@ ARM=right bash scripts/g2/deploy/serve_policy.sh \
 ```
 
 服务端根据本次双臂实测 EE 将单臂预测映射回 20 维绝对动作，RTC 前缀也只对所选臂进行归一化和引导。须同步更新 wholebody 执行端：它读取 `arm` metadata，仅采集头部与对应腕部相机，并不向未选中手臂和夹爪发送 policy 指令。部署脚本中已有的双臂 checkpoint 路径不能用于单臂配置，须显式指定本次实验路径。
+
+## G2 通信协议
+
+G2 部署使用独立 `g2-policy-protocol==0.4.1` 的 `g2.policy.v2`，与 wholebody/G2_pi 共用单份 JSON Schema。
+`uv sync` 从相邻 `../g2-policy-protocol` 安装包；仅部署 wheel 时，将 `tool.uv.sources.g2-policy-protocol.path` 改为本地 wheel 文件路径，再 `uv lock && uv sync`。
+`serve_policy.py` 对 robot=g2 的 metadata 选择 `G2PolicyServer`；非 G2 模型保留原生 OpenPI server。
+G2 server 在入口把标准观测映射成模型内部的 `observation/*`，JPEG 解码、RTC、单臂扩展和图像处理保持在适配层。
+默认 MessagePack，client 连接 `?encoding=json` 时整个会话使用 JSON text frames。
+域控/GPU 需同步更新并重启；本次不兼容旧 `openpi.websocket.v1` G2 客户端。GPU-local smoke 脚本已同步使用新协议。

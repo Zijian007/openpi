@@ -173,7 +173,11 @@ def main(args: Args) -> None:
         local_ip = "unknown"
     logging.info("Creating server (host: %s, ip: %s, port: %s)", hostname, local_ip, args.port)
 
-    server = websocket_policy_server.WebsocketPolicyServer(
+    server_type = websocket_policy_server.WebsocketPolicyServer
+    if policy_metadata.get("robot") == "g2":
+        from openpi.serving.g2_policy_server import G2PolicyServer
+        server_type = G2PolicyServer
+    server = server_type(
         policy=policy,
         host="0.0.0.0",
         port=args.port,
