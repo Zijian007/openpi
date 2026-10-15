@@ -33,6 +33,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 #   pi05_g2_vr_low_mem  LoRA，单张 24GB
 #   pi05_g2_vr          全参；单卡通常 OOM
 # 短跑：--smoke（步数 20、batch 1、关 W&B）。全参也可以 --full。
+ARM="${ARM:-both}"  # both | left | right
 CONFIG_NAME="pi05_g2_vr_low_mem"
 
 # 实验名 = checkpoint 子目录 = W&B run 名。
@@ -105,6 +106,7 @@ cd "${G2_OPENPI_PROJECT_ROOT}"
 export CUDA_VISIBLE_DEVICES
 export XLA_PYTHON_CLIENT_MEM_FRACTION
 
+export G2_TRAIN_ARM="${ARM}"
 export G2_TRAIN_CONFIG_NAME="${CONFIG_NAME}"
 export G2_TRAIN_EXP_NAME="${EXP_NAME}"
 export G2_TRAIN_REPO_ID="${REPO_ID}"

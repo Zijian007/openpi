@@ -101,3 +101,23 @@ bash scripts/g2/deploy/smoke_infer_client.sh --port 8000   # 端口对齐 serve�
 - 环境 / cache / W&B（`G2_openpi`）分开；ckpt **不互通**
 - `serve_policy` ≠ `G2_pi` `policy_server`
 - 域控 `lerobot_pi05_client` 只服务 LeRobot 线；OpenPI 用 `openpi_pi05_client`
+## 单臂 π₀.₅
+
+使用 `ARM=both|left|right`，默认 `both`。右臂新实验：
+
+```bash
+ARM=right bash scripts/g2/train/train_pipeline.sh --no-resume --exp-name right_arm_run
+```
+
+也可以使用 `--arm right`。训练包装器自动选择 `pi05_g2_vr_low_mem_right`（全参则为 `pi05_g2_vr_right`）；左臂对应 `_left`。独立配置名隔离 norm stats 和 checkpoint，切换选臂后需要重新计算统计量。原始双臂数据无需重新导出。
+
+单臂模型使用头部与对应腕部相机，选取对应的 10 维 EE 状态和动作。xyz/rot6d 以 chunk 起点实测 EE 为参考，夹爪保持绝对值。模型内部仍补零到 32 维；另一腕相机使用黑色占位及 false mask，不读取或使用该相机内容。
+
+部署时配置必须与训练一致：
+
+```bash
+ARM=right bash scripts/g2/deploy/serve_policy.sh \
+  --policy-dir checkpoints/pi05_g2_vr_low_mem_right/right_arm_run/<step>
+```
+
+服务端根据本次双臂实测 EE 将单臂预测映射回 20 维绝对动作，RTC 前缀也只对所选臂进行归一化和引导。须同步更新 wholebody 执行端：它读取 `arm` metadata，仅采集头部与对应腕部相机，并不向未选中手臂和夹爪发送 policy 指令。部署脚本中已有的双臂 checkpoint 路径不能用于单臂配置，须显式指定本次实验路径。

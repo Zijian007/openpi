@@ -121,6 +121,7 @@ def _parse_argv(argv: list[str]) -> tuple[argparse.Namespace, list[str], tuple[s
         description="G2 wrapper around OpenPI compute_norm_stats.py + train.py"
     )
     parser.add_argument("--preset", choices=sorted(PRESET_TO_CONFIG), default="low_mem")
+    parser.add_argument("--arm", choices=("both", "left", "right"), default=_env("G2_TRAIN_ARM", "both"))
     parser.add_argument("--config-name", default=_env("G2_TRAIN_CONFIG_NAME"))
     parser.add_argument("--exp-name", default=_env("G2_TRAIN_EXP_NAME"))
     parser.add_argument("--repo-id", default=_env("G2_TRAIN_REPO_ID", "g2_vr_lerobot_v21"))
@@ -140,6 +141,7 @@ def _parse_argv(argv: list[str]) -> tuple[argparse.Namespace, list[str], tuple[s
     parser.add_argument("--no-overwrite", dest="overwrite", action="store_false")
     parser.set_defaults(overwrite=_env_bool("G2_TRAIN_OVERWRITE", True))
     parser.add_argument("--resume", action="store_true", default=_env_bool("G2_TRAIN_RESUME", False))
+    parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--wandb", choices=("auto", "on", "off"), default=_env("G2_TRAIN_WANDB", "auto"))
     parser.add_argument("--wandb-project", default=_env("G2_TRAIN_WANDB_PROJECT", "G2_openpi"))
     parser.add_argument(
@@ -253,6 +255,13 @@ def main(argv: list[str] | None = None) -> None:
         preset_from_cli=preset_from_cli,
         config_name_from_cli=config_name_from_cli,
     )
+
+    if args.arm != "both":
+        if config_name.endswith(("_left", "_right")):
+            if not config_name.endswith(f"_{args.arm}"):
+                raise ValueError("--arm disagrees with --config-name")
+        else:
+            config_name = f"{config_name}_{args.arm}"
 
     if args.preset == "smoke":
         if args.num_train_steps is None:

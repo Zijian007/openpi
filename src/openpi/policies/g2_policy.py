@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import dataclasses
 
-import einops
 import numpy as np
 
+from openpi.policies.g2_arm_contract import arm_slice as arm_slice
+from openpi.policies.g2_arm_contract import expand_arm_actions as expand_arm_actions
+from openpi.policies.g2_arm_contract import prepare_inputs
 from openpi import transforms
 from openpi.g2_lerobot_contract import G2
 from openpi.models import model as _model
@@ -38,50 +40,16 @@ def make_g2_example() -> dict:
     }
 
 
-def _parse_image(image) -> np.ndarray:
-    image = np.asarray(image)
-    if np.issubdtype(image.dtype, np.floating):
-        image = (255 * image).astype(np.uint8)
-    if image.shape[0] == 3:
-        image = einops.rearrange(image, "c h w -> h w c")
-    return image
-
 
 @dataclasses.dataclass(frozen=True)
 class G2Inputs(transforms.DataTransformFn):
     """Map G2 observation dict → π₀.₅ model inputs (three cameras)."""
 
     model_type: _model.ModelType
+    arm: str = "both"
 
     def __call__(self, data: dict) -> dict:
-        base_image = _parse_image(data["observation/image"])
-        left_wrist = _parse_image(data["observation/wrist_image_left"])
-        right_wrist = _parse_image(data["observation/wrist_image_right"])
-
-        inputs = {
-            "state": np.asarray(data["observation/state"]),
-            "image": {
-                "base_0_rgb": base_image,
-                "left_wrist_0_rgb": left_wrist,
-                "right_wrist_0_rgb": right_wrist,
-            },
-            "image_mask": {
-                "base_0_rgb": np.True_,
-                "left_wrist_0_rgb": np.True_,
-                "right_wrist_0_rgb": np.True_,
-            },
-        }
-
-        if "actions" in data:
-            inputs["actions"] = np.asarray(data["actions"])
-
-        if "prompt" in data:
-            prompt = data["prompt"]
-            if isinstance(prompt, bytes):
-                prompt = prompt.decode("utf-8")
-            inputs["prompt"] = prompt
-
-        return inputs
+        return prepare_inputs(data, self.arm)
 
 
 @dataclasses.dataclass(frozen=True)

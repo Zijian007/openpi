@@ -31,6 +31,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 # 哪份 TrainConfig。须与 checkpoint 目录上一级的配置名一致。
 #   pi05_g2_vr_low_mem  LoRA
 #   pi05_g2_vr          全参
+ARM="${ARM:-both}"  # must match training
 CONFIG_NAME="pi05_g2_vr_low_mem"
 
 # checkpoint 的 step 目录（…/<exp>/<step>），相对仓库根或绝对路径。
@@ -65,6 +66,7 @@ usage() {
 Usage: bash scripts/g2/deploy/serve_policy.sh [options]
 
   --policy-dir DIR | -d DIR   checkpoint step dir (…/<exp>/<step>)
+  --arm both|left|right       select matching single-arm TrainConfig
   --config-name NAME          TrainConfig name (default ${CONFIG_NAME})
   --port PORT                 WebSocket port (default ${PORT}; use 8001 if LeRobot holds 8000)
   --warmup | --no-warmup      dummy infer before listen (default ${WARMUP})
@@ -80,6 +82,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --policy-dir|-d)
       POLICY_DIR="$2"
+      shift 2
+      ;;
+    --arm)
+      ARM="$2"
       shift 2
       ;;
     --config-name)
@@ -150,6 +156,18 @@ if [[ ! -d "${G2_OPENPI_PROJECT_ROOT}/.venv" ]]; then
   echo "ERROR: missing ${G2_OPENPI_PROJECT_ROOT}/.venv — run bash scripts/g2/bootstrap.sh" >&2
   exit 1
 fi
+
+case "${ARM}" in
+  both) ;;
+  left|right)
+    case "${CONFIG_NAME}" in
+      *_"${ARM}") ;;
+      *_left|*_right) echo "ERROR: ARM disagrees with CONFIG_NAME" >&2; exit 1 ;;
+      *) CONFIG_NAME="${CONFIG_NAME}_${ARM}" ;;
+    esac
+    ;;
+  *) echo "ERROR: ARM must be both, left or right" >&2; exit 1 ;;
+esac
 
 PICK_ARGS=(
   scripts/g2/deploy/pick_checkpoint.py

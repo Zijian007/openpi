@@ -76,6 +76,13 @@ def create_trained_policy(
         except ImportError:
             pytorch_device = "cpu"
 
+    metadata = dict(train_config.policy_metadata)
+    if isinstance(train_config.data, _config.LeRobotG2DataConfig):
+        arm = train_config.data.arm
+        metadata.update(arm=arm, model_action_dim=20 if arm == "both" else 10,
+                        camera_ids=["head_color", "hand_left_color", "hand_right_color"] if arm == "both"
+                        else ["head_color", f"hand_{arm}_color"])
+
     return _policy.Policy(
         model,
         transforms=[
@@ -92,7 +99,7 @@ def create_trained_policy(
             *repack_transforms.outputs,
         ],
         sample_kwargs=sample_kwargs,
-        metadata=train_config.policy_metadata,
+        metadata=metadata,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
         rtc_config=rtc_config,

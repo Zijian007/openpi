@@ -24,6 +24,40 @@ class EchoModel(torch.nn.Module):
         return kwargs["rtc_prefix"]
 
 
+@pytest.mark.parametrize("arm,start", [("left", 0), ("right", 10)])
+def test_single_arm_rtc_round_trip_keeps_correct_side_and_ignores_inactive_prefix(arm, start):
+    echo_model = EchoModel()
+    stats = {"actions": transforms.NormStats(mean=np.ones(10), std=np.full(10, 2.0))}
+    policy = Policy(
+        echo_model,
+        is_pytorch=True,
+        rtc_config=RTCConfig(),
+        metadata={"robot": "g2", "arm": arm, "action_dim": 20, "model_action_dim": 10},
+        transforms=[
+            g2_policy.G2Inputs(model.ModelType.PI05, arm=arm),
+            transforms.DeltaActions([True] * 9 + [False]),
+            transforms.Normalize(stats),
+            transforms.PadStatesAndActions(32),
+        ],
+        output_transforms=[
+            transforms.Unnormalize(stats),
+            transforms.AbsoluteActions([True] * 9 + [False]),
+            g2_policy.G2Outputs(action_dim=10),
+        ],
+    )
+    obs = g2_policy.make_g2_example()
+    inactive = "left" if arm == "right" else "right"
+    obs.pop(f"observation/wrist_image_{inactive}")
+    obs["observation/state"] = np.arange(20, dtype=np.float32) / 10
+    prefix = np.full((6, 20), 3.0, dtype=np.float32)
+    obs.update(rtc_enabled=True, prev_chunk_left_over=prefix, inference_delay=2)
+    result = policy.infer(obs)["actions"]
+    np.testing.assert_allclose(result[:6, start:start + 10], 3.0, atol=1e-6)
+    other = slice(10, 20) if arm == "left" else slice(0, 10)
+    np.testing.assert_allclose(result[:, other], np.tile(obs["observation/state"][other], (50, 1)))
+    assert not echo_model.kwargs["rtc_weights"].numpy()[..., 10:].any()
+
+
 @pytest.mark.parametrize("quantiles", [False, True])
 def test_absolute_prefix_reanchors_normalizes_and_round_trips(quantiles):
     stats = {

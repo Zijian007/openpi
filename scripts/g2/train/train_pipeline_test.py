@@ -2,13 +2,29 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from train_pipeline import normalize_child_status, resolve_config_name, should_skip_norm, wandb_enabled
+from train_pipeline import main, normalize_child_status, resolve_config_name, should_skip_norm, wandb_enabled
 
 
 class TrainPipelineResolveTest(unittest.TestCase):
+    def test_right_arm_selects_separate_norm_and_checkpoint_config(self) -> None:
+        out = StringIO()
+        with patch.dict("os.environ", {}, clear=True), redirect_stdout(out):
+            main(["--arm", "right", "--dry-run", "--norm", "force", "--exp-name", "arm_test"])
+        commands = out.getvalue()
+        self.assertIn("--config-name pi05_g2_vr_low_mem_right", commands)
+        self.assertIn("scripts/train.py pi05_g2_vr_low_mem_right", commands)
+        self.assertIn("checkpoints/pi05_g2_vr_low_mem_right/arm_test", commands)
+
+    def test_rejects_mismatched_explicit_arm_config(self) -> None:
+        with self.assertRaisesRegex(ValueError, "disagrees"):
+            main(["--arm", "left", "--config-name", "pi05_g2_vr_right", "--dry-run"])
+
     def test_config_name_from_shell_config(self) -> None:
         self.assertEqual(
             resolve_config_name(

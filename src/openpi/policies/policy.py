@@ -113,7 +113,7 @@ class Policy(BasePolicy):
                 transformed_prefix if rtc_enabled else None,
                 action_horizon=self._action_horizon,
                 action_dim=self._action_dim,
-                wire_action_dim=wire_action_dim,
+                wire_action_dim=self._metadata.get("model_action_dim", wire_action_dim) if wire_action_dim else 0,
                 inference_delay=inference_delay if rtc_enabled else 0,
                 config=self._rtc_config,
             )
@@ -166,6 +166,12 @@ class Policy(BasePolicy):
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
         outputs = self._output_transform(outputs)
+        if self._metadata.get("robot") == "g2" and self._metadata.get("arm", "both") != "both":
+            from openpi.policies.g2_policy import expand_arm_actions
+
+            outputs["actions"] = expand_arm_actions(
+                outputs["actions"], obs["observation/state"], self._metadata["arm"]
+            )
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }

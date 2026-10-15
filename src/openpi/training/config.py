@@ -483,11 +483,15 @@ class LeRobotG2DataConfig(DataConfigFactory):
 
     # Chunk-relative EE pose (OpenPI DeltaActions). False → absolute pose labels; state=joints.
     use_delta_actions: bool = True
+    arm: str = "both"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Delta path needs measured pose as state (same dim/layout as pose actions).
         # Absolute path uses joint proprio. Left-hand keys are the π₀.₅ input contract.
+        g2_policy.arm_slice(self.arm, 20)
+        if self.arm != "both" and not self.use_delta_actions:
+            raise ValueError("single-arm G2 currently requires use_delta_actions=True")
         g2 = g2_contract.G2
         cams = g2.cameras
         state_key = g2.columns.proprio_key(delta_actions=self.use_delta_actions)
@@ -506,14 +510,19 @@ class LeRobotG2DataConfig(DataConfigFactory):
             ]
         )
 
+        if self.arm != "both":
+            mapping = dict(repack_transform.inputs[0].structure)
+            mapping.pop("observation/wrist_image_left" if self.arm == "right" else "observation/wrist_image_right")
+            repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(mapping)])
+
         data_transforms = _transforms.Group(
-            inputs=[g2_policy.G2Inputs(model_type=model_config.model_type)],
-            outputs=[g2_policy.G2Outputs()],
+            inputs=[g2_policy.G2Inputs(model_type=model_config.model_type, arm=self.arm)],
+            outputs=[g2_policy.G2Outputs(action_dim=20 if self.arm == "both" else 10)],
         )
 
         if self.use_delta_actions:
             # L/R: xyz+rot6d delta; gripper absolute. Mask follows pose layout.
-            delta_action_mask = g2.pose.delta_mask()
+            delta_action_mask = g2.pose.delta_mask()[g2_policy.arm_slice(self.arm, 20)]
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
@@ -1101,6 +1110,19 @@ _CONFIGS = [
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
 ]
+
+# Separate names isolate norm assets and checkpoints between arm selections.
+_CONFIGS.extend([
+    dataclasses.replace(
+        config,
+        name=f"{config.name}_{arm}",
+        data=dataclasses.replace(config.data, arm=arm),
+        policy_metadata={**config.policy_metadata, "arm": arm, "model_action_dim": 10},
+    )
+    for config in tuple(_CONFIGS)
+    if config.name in ("pi05_g2_vr", "pi05_g2_vr_low_mem")
+    for arm in ("left", "right")
+])
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")
