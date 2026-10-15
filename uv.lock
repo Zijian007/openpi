@@ -1131,7 +1131,7 @@ http = [
 [[package]]
 name = "g2-policy-protocol"
 version = "0.4.1"
-source = { directory = "../g2-policy-protocol" }
+source = { directory = "../../g2-policy-protocol" }
 dependencies = [
     { name = "msgpack" },
     { name = "numpy" },
@@ -3169,7 +3169,7 @@ requires-dist = [
     { name = "flatbuffers", specifier = ">=24.3.25" },
     { name = "flax", specifier = "==0.10.2" },
     { name = "fsspec", extras = ["gcs"], specifier = ">=2024.6.0" },
-    { name = "g2-policy-protocol", directory = "../g2-policy-protocol" },
+    { name = "g2-policy-protocol", directory = "../../g2-policy-protocol" },
     { name = "gym-aloha", specifier = ">=0.1.1" },
     { name = "imageio", specifier = ">=2.36.1" },
     { name = "jax", extras = ["cuda12"], specifier = "==0.5.3" },
