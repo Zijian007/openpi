@@ -118,8 +118,13 @@ class DiskColumnKeys:
 
     state_joint: str = "state.joint"
     state_pose: str = "state.pose"
+    state_torso: str = "state.torso"
+    state_head: str = "state.head"
+    state_arm_base: str = "state.arm_base"
     action_pose: str = "action.pose"
     action_joint: str = "action.joint"
+    action_torso: str = "action.torso"
+    action_head: str = "action.head"
     qa_action_pose_minus_state_pose: str = "qa.action_pose_minus_state_pose"
 
     def vector_columns(self) -> tuple[str, ...]:
