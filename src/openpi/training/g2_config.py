@@ -304,8 +304,6 @@ def build_train_config(settings: dict[str, Any], extra_args: tuple[str, ...] = (
     metadata = {
         **base.policy_metadata,
         "action_horizon": model.action_horizon,
-        "state_is_ee": data.use_delta_actions,
-        "camera_ids": list(selected_cameras(settings)),
     }
     config = dataclasses.replace(
         base,

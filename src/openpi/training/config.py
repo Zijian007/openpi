@@ -1034,13 +1034,12 @@ _CONFIGS = [
         batch_size=8,
         wandb_enabled=True,
         project_name="G2_openpi",
-        # Exposed to serve_policy clients on connect (metadata frame).
+        # Handshake fields, plus action_dim for in-process RTC. G2PolicyServer drops action_dim.
         policy_metadata={
             "backend": "openpi",
             "robot": "g2",
             "action_dim": g2_policy.G2_ACTION_DIM,
             "action_horizon": 50,
-            "state_is_ee": True,
             "policy_hz": 30.0,
         },
     ),
@@ -1074,7 +1073,6 @@ _CONFIGS = [
             "robot": "g2",
             "action_dim": g2_policy.G2_ACTION_DIM,
             "action_horizon": 50,
-            "state_is_ee": True,
             "policy_hz": 30.0,
         },
     ),
@@ -1124,7 +1122,6 @@ _CONFIGS.extend([
         config,
         name=f"{config.name}_{arm}",
         data=dataclasses.replace(config.data, arm=arm),
-        policy_metadata={**config.policy_metadata, "arm": arm, "model_action_dim": 10},
     )
     for config in tuple(_CONFIGS)
     if config.name in ("pi05_g2_vr", "pi05_g2_vr_low_mem")

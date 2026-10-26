@@ -11,29 +11,41 @@ from openpi.serving.websocket_policy_server import (
 )
 
 logger = logging.getLogger(__name__)
-# These are model adapter keys, not another wire protocol.
+# Wire camera id → OpenPI observation key. ``prepare_inputs`` renames those again
+# to base_0_rgb / left_wrist_0_rgb / right_wrist_0_rgb for the model.
 _NATIVE_IMAGES = dict(zip(protocol.CAMERA_IDS, (
     'observation/image', 'observation/wrist_image_left', 'observation/wrist_image_right',
 )))
 
 
+def connection_metadata(policy_metadata):
+    """Copy the checkpoint fields that belong on the g2.policy.v2 handshake.
+
+    ``action_dim`` and ``model_action_dim`` stay on the policy for RTC prefix width.
+    The client always receives actions of shape (T, 20).
+    """
+    native = dict(policy_metadata or {})
+    arm = native.get('arm', 'both')
+    required = list(native.get('required_cameras') or protocol.cameras_for_arm(arm))
+    return dict(
+        policy_hz=native.get('policy_hz', 30.0),
+        action_horizon=native.get('action_horizon', 50),
+        arm=arm,
+        image_encoding='jpeg' if cv2 is not None else 'raw',
+        required_cameras=required,
+        image_resize='letterbox',
+        image_sizes={key: [224, 224] for key in required},
+        rtc_supported=bool(native.get('rtc_supported', False)),
+        requires_joint_state=bool(native.get('requires_joint_state', False)),
+        extensions={'backend': 'openpi', 'policy_type': 'pi05'},
+    )
+
+
 class G2PolicyServer(WebsocketPolicyServer):
     def __init__(self, policy, host='0.0.0.0', port=None, metadata=None):
         super().__init__(policy, host=host, port=port, metadata=metadata)
-        native = dict(metadata or {})
-        self._arm = native.get('arm', 'both')
-        self._requires_joint_state = bool(native.get('requires_joint_state', False))
-        required = native.get('camera_ids', protocol.cameras_for_arm(self._arm))
-        self._contract = dict(
-            policy_hz=native.get('policy_hz', 30.0),
-            action_horizon=native.get('action_horizon', 50), arm=self._arm,
-            image_encoding='jpeg' if cv2 is not None else 'raw',
-            required_cameras=required, image_resize='letterbox',
-            image_sizes={key: [224, 224] for key in required},
-            rtc_supported=bool(native.get('rtc_supported', False)),
-            requires_joint_state=self._requires_joint_state,
-            extensions={'backend': 'openpi', 'policy_type': 'pi05'},
-        )
+        self._contract = connection_metadata(metadata)
+        self._requires_joint_state = self._contract['requires_joint_state']
         protocol.build_metadata(**self._contract)  # Fail before listening on invalid capabilities.
 
     async def _handler(self, websocket):

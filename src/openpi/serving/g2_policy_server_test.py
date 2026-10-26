@@ -44,7 +44,7 @@ def test_configured_camera_subset_and_state_source_reach_policy(requires_joint_s
 
     with patch("openpi.serving.g2_policy_server.cv2", None):
         server = G2PolicyServer(
-            Policy(), metadata={"camera_ids": ["head_color"], "requires_joint_state": requires_joint_state}
+            Policy(), metadata={"required_cameras": ["head_color"], "requires_joint_state": requires_joint_state}
         )
     websocket = Websocket()
     asyncio.run(server._handler(websocket))  # noqa: SLF001

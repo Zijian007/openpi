@@ -139,7 +139,7 @@ def test_serving_restores_checkpoint_settings_before_loading_model(tmp_path, mon
     )
     assert loaded_horizons == [30]
     assert policy.metadata["action_horizon"] == 30
-    assert policy.metadata["camera_ids"] == ["head_color"]
+    assert policy.metadata["required_cameras"] == ["head_color"]
 
 
 @pytest.mark.parametrize("arm", ["both", "right"])

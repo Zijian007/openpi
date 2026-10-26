@@ -94,8 +94,9 @@ def create_trained_policy(
         arm = train_config.data.arm
         metadata.update(
             arm=arm,
+            # RTC prefix width inside this process. The websocket action is always 20-D.
             model_action_dim=20 if arm == "both" else 10,
-            camera_ids=list(g2_policy.selected_camera_ids(arm, train_config.data.cameras)),
+            required_cameras=list(g2_policy.selected_camera_ids(arm, train_config.data.cameras)),
             requires_joint_state=not train_config.data.use_delta_actions,
         )
 
