@@ -4,6 +4,7 @@
 #   bash scripts/g2/bootstrap.sh
 #   bash scripts/g2/bootstrap.sh --no-proxy
 #   bash scripts/g2/bootstrap.sh --download-base
+#   bash scripts/g2/bootstrap.sh --with-submodules # optional ALOHA / LIBERO examples
 #
 # Does NOT touch ~/work/G2_pi or /home/agi/.venv.
 
@@ -15,6 +16,7 @@ source "${PROJECT_ROOT}/scripts/g2/_env.sh"
 
 USE_PROXY=true
 DOWNLOAD_BASE=false
+WITH_SUBMODULES=false
 
 usage() {
   cat <<EOF
@@ -22,6 +24,7 @@ Usage: bash scripts/g2/bootstrap.sh [options]
 
   --no-proxy         Do not set HTTP(S)_PROXY (default: ${G2_OPENPI_DEFAULT_PROXY})
   --download-base    Also download gs://openpi-assets/checkpoints/pi05_base
+  --with-submodules  Clone optional ALOHA / LIBERO example submodules (G2 does not need them)
   --help             Show this help
 
 Project: ${PROJECT_ROOT}
@@ -32,6 +35,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-proxy) USE_PROXY=false; shift ;;
     --download-base) DOWNLOAD_BASE=true; shift ;;
+    --with-submodules) WITH_SUBMODULES=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
   esac
@@ -52,12 +56,12 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -f "${PROJECT_ROOT}/.gitmodules" ]]; then
-  echo "WARN: no .gitmodules — submodules may be incomplete" >&2
+if [[ "${WITH_SUBMODULES}" == true ]]; then
+  echo "[bootstrap] git submodule update --init --recursive"
+  git submodule update --init --recursive
+else
+  echo "[bootstrap] skipping optional ALOHA / LIBERO submodules (use --with-submodules to download)"
 fi
-
-echo "[bootstrap] git submodule update --init --recursive"
-git submodule update --init --recursive
 
 echo "[bootstrap] GIT_LFS_SKIP_SMUDGE=1 uv sync"
 GIT_LFS_SKIP_SMUDGE=1 uv sync

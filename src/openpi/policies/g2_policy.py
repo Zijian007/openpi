@@ -18,12 +18,23 @@ import dataclasses
 
 import numpy as np
 
-from openpi.policies.g2_arm_contract import arm_slice as arm_slice
-from openpi.policies.g2_arm_contract import expand_arm_actions as expand_arm_actions
-from openpi.policies.g2_arm_contract import prepare_inputs
 from openpi import transforms
 from openpi.g2_lerobot_contract import G2
 from openpi.models import model as _model
+from openpi.policies.g2_arm_contract import arm_slice
+from openpi.policies.g2_arm_contract import expand_arm_actions
+from openpi.policies.g2_arm_contract import prepare_inputs
+from openpi.policies.g2_arm_contract import selected_camera_ids
+
+__all__ = [
+    "G2_ACTION_DIM",
+    "G2Inputs",
+    "G2Outputs",
+    "arm_slice",
+    "expand_arm_actions",
+    "make_g2_example",
+    "selected_camera_ids",
+]
 
 # Effective G2 pose action dim (padded to model action_dim=32 by PadStatesAndActions).
 G2_ACTION_DIM = G2.pose.dim
@@ -40,16 +51,16 @@ def make_g2_example() -> dict:
     }
 
 
-
 @dataclasses.dataclass(frozen=True)
 class G2Inputs(transforms.DataTransformFn):
     """Map G2 observation dict → π₀.₅ model inputs (three cameras)."""
 
     model_type: _model.ModelType
     arm: str = "both"
+    cameras: tuple[str, ...] | None = None
 
     def __call__(self, data: dict) -> dict:
-        return prepare_inputs(data, self.arm)
+        return prepare_inputs(data, self.arm, self.cameras)
 
 
 @dataclasses.dataclass(frozen=True)

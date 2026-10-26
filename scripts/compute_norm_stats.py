@@ -92,6 +92,11 @@ def main(config_name: str, max_frames: int | None = None, repo_id: str | None = 
     config = _config.get_config(config_name)
     if repo_id:
         config = dataclasses.replace(config, data=dataclasses.replace(config.data, repo_id=repo_id))
+    compute_norm_stats(config, max_frames=max_frames)
+
+
+def compute_norm_stats(config: _config.TrainConfig, max_frames: int | None = None):
+    """Compute stats from the fully resolved training config, including data/model overrides."""
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:

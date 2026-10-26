@@ -104,8 +104,11 @@ def create_policy(args: Args) -> _policy.Policy:
                 _config.get_config(args.policy.config),
                 args.policy.dir,
                 default_prompt=args.default_prompt,
-                rtc_config=RTCConfig(soft_overlap_steps=args.rtc_soft_overlap_steps,
-                                     max_guidance_weight=args.rtc_guidance) if args.rtc else None,
+                rtc_config=RTCConfig(
+                    soft_overlap_steps=args.rtc_soft_overlap_steps, max_guidance_weight=args.rtc_guidance
+                )
+                if args.rtc
+                else None,
             )
         case Default():
             if args.rtc:
@@ -129,6 +132,10 @@ def _warmup(policy: _policy.Policy, args: Args) -> None:
         return
 
     obs = _g2_warmup_obs()
+    if policy.metadata.get("requires_joint_state", False):
+        import numpy as np
+
+        obs["observation/state"] = np.zeros(16, dtype=np.float32)
     previous_actions = None
     logging.info("warmup start (JIT) images=224x224 prompt=%r", obs.get("prompt"))
     for step in range(4 if args.rtc else 2):
@@ -176,6 +183,7 @@ def main(args: Args) -> None:
     server_type = websocket_policy_server.WebsocketPolicyServer
     if policy_metadata.get("robot") == "g2":
         from openpi.serving.g2_policy_server import G2PolicyServer
+
         server_type = G2PolicyServer
     server = server_type(
         policy=policy,

@@ -1,213 +1,172 @@
 #!/usr/bin/env python3
-"""G2 wrapper: compute_norm_stats → train via official OpenPI scripts.
-
-Daily knobs live in ``train_pipeline.sh`` (exported as ``G2_TRAIN_*``).
-This file only applies presets and shells out to::
-
-    uv run scripts/compute_norm_stats.py ...
-    uv run scripts/train.py ...
-"""
+"""Run G2 normalization and training from one YAML experiment configuration."""
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
+from pathlib import Path
 import shlex
 import signal
 import subprocess
 import sys
-from pathlib import Path
+import tempfile
+from zoneinfo import ZoneInfo
 
-PRESET_TO_CONFIG = {
-    "low_mem": "pi05_g2_vr_low_mem",
-    "full_ft": "pi05_g2_vr",
-    "smoke": "pi05_g2_vr_low_mem",
-}
+import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from openpi.training import g2_config
 
-
-def _env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
+PROJECT_ROOT = g2_config.PROJECT_ROOT
 
 
-def _env_int(name: str) -> int | None:
-    raw = os.environ.get(name, "")
-    return int(raw) if raw else None
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.lower() in {"true", "1", "yes"}
-
-
-def _flag_present(argv: list[str], flag: str) -> bool:
-    return any(token == flag or token.startswith(f"{flag}=") for token in argv)
-
-
-def resolve_under_project(path: str, project_root: Path) -> Path:
+def resolve_under_project(path: str, project_root: Path = PROJECT_ROOT) -> Path:
     candidate = Path(path).expanduser()
-    if candidate.is_absolute():
-        return candidate.resolve()
-    return (project_root / candidate).resolve()
-
-
-def resolve_config_name(
-    *,
-    preset: str,
-    config_name: str,
-    preset_from_cli: bool,
-    config_name_from_cli: bool,
-) -> str:
-    if config_name_from_cli:
-        return config_name
-    if preset_from_cli or not config_name:
-        return PRESET_TO_CONFIG[preset]
-    return config_name
+    return candidate.resolve() if candidate.is_absolute() else (project_root / candidate).resolve()
 
 
 def should_skip_norm(norm_mode: str, norm_stats_file: Path) -> bool:
-    if norm_mode == "force":
-        return False
-    if norm_mode == "skip":
-        return True
-    return norm_stats_file.is_file()
+    return norm_mode == "skip" or (norm_mode == "auto" and norm_stats_file.is_file())
 
 
 def wandb_enabled(wandb_mode: str, preset: str) -> bool:
-    if wandb_mode == "on":
-        return True
-    if wandb_mode == "off":
-        return False
-    return preset != "smoke"
+    return wandb_mode == "on" or (wandb_mode == "auto" and preset != "smoke")
 
 
-def _parse_argv(argv: list[str]) -> tuple[argparse.Namespace, list[str], tuple[str, ...]]:
+def _parse_argv(argv: list[str]):
     if "--" in argv:
         split_at = argv.index("--")
-        pipeline_argv, passthru = argv[:split_at], tuple(argv[split_at + 1 :])
+        argv, extra_args = argv[:split_at], tuple(argv[split_at + 1 :])
     else:
-        pipeline_argv, passthru = argv, ()
-
-    rewritten: list[str] = []
-    index = 0
-    while index < len(pipeline_argv):
-        token = pipeline_argv[index]
-        if token == "--smoke":
-            rewritten.extend(["--preset", "smoke"])
-        elif token == "--full":
-            rewritten.extend(["--preset", "full_ft"])
-        elif token == "--no-wandb":
-            rewritten.extend(["--wandb", "off"])
-        elif token == "--wandb":
-            if index + 1 < len(pipeline_argv) and pipeline_argv[index + 1] in {"auto", "on", "off"}:
-                rewritten.append(token)
-            else:
-                rewritten.extend(["--wandb", "on"])
-        elif token == "--project-name" and index + 1 < len(pipeline_argv):
-            rewritten.extend(["--wandb-project", pipeline_argv[index + 1]])
-            index += 2
-            continue
-        elif token == "--no-proxy":
-            rewritten.append("--no-use-proxy")
-        else:
-            rewritten.append(token)
-        index += 1
-
-    parser = argparse.ArgumentParser(
-        description="G2 wrapper around OpenPI compute_norm_stats.py + train.py"
-    )
-    parser.add_argument("--preset", choices=sorted(PRESET_TO_CONFIG), default="low_mem")
-    parser.add_argument("--arm", choices=("both", "left", "right"), default=_env("G2_TRAIN_ARM", "both"))
-    parser.add_argument("--config-name", default=_env("G2_TRAIN_CONFIG_NAME"))
-    parser.add_argument("--exp-name", default=_env("G2_TRAIN_EXP_NAME"))
-    parser.add_argument("--repo-id", default=_env("G2_TRAIN_REPO_ID", "g2_vr_lerobot_v21"))
-    parser.add_argument("--norm", choices=("auto", "skip", "force"), default=_env("G2_TRAIN_NORM", "auto"))
-    parser.add_argument("--max-frames", type=int, default=_env_int("G2_TRAIN_MAX_FRAMES"))
-    parser.add_argument("--checkpoint-base-dir", default=_env("G2_TRAIN_CHECKPOINT_BASE_DIR", "./checkpoints"))
-    parser.add_argument("--assets-base-dir", default=_env("G2_TRAIN_ASSETS_BASE_DIR", "./assets"))
-    parser.add_argument("--batch-size", type=int, default=_env_int("G2_TRAIN_BATCH_SIZE"))
-    parser.add_argument("--num-workers", type=int, default=_env_int("G2_TRAIN_NUM_WORKERS"))
-    parser.add_argument("--num-train-steps", type=int, default=_env_int("G2_TRAIN_NUM_TRAIN_STEPS"))
-    parser.add_argument("--log-interval", type=int, default=_env_int("G2_TRAIN_LOG_INTERVAL"))
-    parser.add_argument("--save-interval", type=int, default=_env_int("G2_TRAIN_SAVE_INTERVAL"))
-    parser.add_argument("--keep-period", default=_env("G2_TRAIN_KEEP_PERIOD") or None)
-    parser.add_argument("--seed", type=int, default=_env_int("G2_TRAIN_SEED"))
-    parser.add_argument("--fsdp-devices", type=int, default=_env_int("G2_TRAIN_FSDP_DEVICES"))
-    parser.add_argument("--overwrite", dest="overwrite", action="store_true")
-    parser.add_argument("--no-overwrite", dest="overwrite", action="store_false")
-    parser.set_defaults(overwrite=_env_bool("G2_TRAIN_OVERWRITE", True))
-    parser.add_argument("--resume", action="store_true", default=_env_bool("G2_TRAIN_RESUME", False))
-    parser.add_argument("--no-resume", dest="resume", action="store_false")
-    parser.add_argument("--wandb", choices=("auto", "on", "off"), default=_env("G2_TRAIN_WANDB", "auto"))
-    parser.add_argument("--wandb-project", default=_env("G2_TRAIN_WANDB_PROJECT", "G2_openpi"))
+        extra_args = ()
+    parser = argparse.ArgumentParser(description=__doc__, argument_default=argparse.SUPPRESS)
     parser.add_argument(
-        "--use-proxy",
-        action=argparse.BooleanOptionalAction,
-        default=_env_bool("G2_TRAIN_USE_PROXY", True),
+        "--config", type=Path, default=g2_config.DEFAULT_CONFIG, help="YAML file; paths are relative to repo root"
     )
+    parser.add_argument("--preset", choices=("low_mem", "full_ft", "smoke"))
+    parser.add_argument("--smoke", dest="preset", action="store_const", const="smoke")
+    parser.add_argument("--full", dest="preset", action="store_const", const="full_ft")
+    parser.add_argument("--config-name", help="Compatibility alias for a built-in G2 preset/arm")
+    parser.add_argument("--arm", choices=("both", "left", "right"))
+    for flag in ("exp-name", "repo-id", "data-root", "checkpoint-base-dir", "assets-base-dir", "params-path"):
+        parser.add_argument(f"--{flag}")
+    parser.add_argument("--action-mode", choices=("relative", "absolute"))
+    for flag in (
+        "batch-size",
+        "num-workers",
+        "num-train-steps",
+        "log-interval",
+        "save-interval",
+        "seed",
+        "fsdp-devices",
+        "action-horizon",
+        "max-frames",
+        "warmup-steps",
+        "decay-steps",
+    ):
+        parser.add_argument(f"--{flag}", type=int)
+    for flag in ("peak-lr", "decay-lr"):
+        parser.add_argument(f"--{flag}", type=float)
+    parser.add_argument("--keep-period", type=lambda value: None if value.lower() in ("none", "null") else int(value))
+    for flag in ("overwrite", "resume", "use-proxy"):
+        parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--no-proxy", dest="use_proxy", action="store_false")
+    parser.add_argument("--wandb", nargs="?", const="on", choices=("auto", "on", "off"))
+    parser.add_argument("--no-wandb", dest="wandb", action="store_const", const="off")
+    parser.add_argument("--wandb-project", "--project-name", dest="wandb_project")
+    parser.add_argument("--norm", choices=("auto", "force", "skip"))
+    parser.add_argument("--skip-norm", dest="norm", action="store_const", const="skip")
+    parser.add_argument("--force-norm", dest="norm", action="store_const", const="force")
     parser.add_argument("--norm-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--skip-norm", action="store_true")
-    parser.add_argument("--force-norm", action="store_true")
-    args = parser.parse_args(rewritten)
-    return args, rewritten, passthru
+    parser.add_argument("--stage", choices=("norm", "train"), help=argparse.SUPPRESS)
+    parser.add_argument("--resolved-config", type=Path, help=argparse.SUPPRESS)
+    return parser.parse_args(argv), extra_args
 
 
-def _build_norm_command(args: argparse.Namespace, config_name: str) -> list[str]:
-    command = [
-        "scripts/compute_norm_stats.py",
-        "--config-name",
-        config_name,
-        f"--repo-id={args.repo_id}",
-    ]
-    if args.max_frames is not None:
-        command.append(f"--max-frames={args.max_frames}")
-    return command
+def _resolve(args):
+    overrides = vars(args).copy()
+    name = overrides.pop("config_name", None)
+    if name:
+        base = name.removesuffix("_left").removesuffix("_right")
+        presets = {"pi05_g2_vr": "full_ft", "pi05_g2_vr_low_mem": "low_mem"}
+        if base not in presets:
+            raise ValueError("--config-name only accepts built-in pi05_g2_vr configurations; use YAML for overrides")
+        if name.endswith(("_left", "_right")):
+            arm = "left" if name.endswith("_left") else "right"
+            if "arm" in overrides and overrides["arm"] != arm:
+                raise ValueError("--arm disagrees with --config-name")
+            overrides["arm"] = arm
+        overrides["preset"] = presets[base]
+    if "arm" not in overrides and "ARM" in os.environ:
+        overrides["arm"] = os.environ["ARM"]
+    settings = g2_config.resolve_settings(g2_config.load_settings(args.config), overrides)
+    if not settings["experiment"]["name"]:
+        prefix = "g2_vr_smoke" if settings["experiment"]["preset"] == "smoke" else "g2_vr_pi05"
+        stamp = dt.datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S_%f")
+        settings["experiment"]["name"] = f"{prefix}_{stamp}"
+    for section, key in (("data", "root"), ("checkpoints", "base_dir"), ("checkpoints", "assets_dir")):
+        settings[section][key] = str(resolve_under_project(settings[section][key]))
+    if "://" not in settings["model"]["params_path"]:
+        settings["model"]["params_path"] = str(resolve_under_project(settings["model"]["params_path"]))
+    settings["runtime"]["gpu"] = os.environ.get("CUDA_VISIBLE_DEVICES", settings["runtime"]["gpu"])
+    settings["runtime"]["mem_fraction"] = float(
+        os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION", settings["runtime"]["mem_fraction"])
+    )
+    g2_config.validate_settings(settings)
+    return settings
 
 
-def _build_train_command(
-    args: argparse.Namespace,
-    *,
-    config_name: str,
-    exp_name: str,
-    overwrite: bool,
-    wandb_on: bool,
-    passthru: tuple[str, ...],
-) -> list[str]:
-    command = [
-        "scripts/train.py",
-        config_name,
-        f"--exp-name={exp_name}",
-        f"--checkpoint-base-dir={args.checkpoint_base_dir}",
-        f"--assets-base-dir={args.assets_base_dir}",
-        f"--project-name={args.wandb_project}",
-        f"--data.repo-id={args.repo_id}",
-    ]
-    for value, flag in (
-        (args.batch_size, "--batch-size"),
-        (args.num_workers, "--num-workers"),
-        (args.num_train_steps, "--num-train-steps"),
-        (args.log_interval, "--log-interval"),
-        (args.save_interval, "--save-interval"),
-        (args.seed, "--seed"),
-        (args.fsdp_devices, "--fsdp-devices"),
-    ):
-        if value is not None:
-            command.append(f"{flag}={value}")
-    if args.keep_period:
-        if args.keep_period.lower() in {"none", "null"}:
-            command.append("--keep-period=None")
+def _setup_runtime(settings):
+    os.environ["HF_LEROBOT_HOME"] = settings["data"]["root"]
+    os.environ["CUDA_VISIBLE_DEVICES"] = settings["runtime"]["gpu"]
+    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = str(settings["runtime"]["mem_fraction"])
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
+        if settings["runtime"]["use_proxy"]:
+            os.environ[key] = settings["runtime"]["proxy"]
         else:
-            command.append(f"--keep-period={args.keep_period}")
-    command.append("--overwrite" if overwrite else "--no-overwrite")
-    command.append("--resume" if args.resume else "--no-resume")
-    command.append("--wandb-enabled" if wandb_on else "--no-wandb-enabled")
-    command.extend(passthru)
-    return command
+            os.environ.pop(key, None)
+
+
+def _check_dataset(settings):
+    root = Path(settings["data"]["root"]) / settings["data"]["repo_id"]
+    for name in ("info.json", "episodes_stats.jsonl"):
+        if not (root / "meta" / name).is_file():
+            raise FileNotFoundError(f"LeRobot v2.1 dataset file missing: {root / 'meta' / name}")
+    info = json.loads((root / "meta/info.json").read_text())
+    if info.get("codebase_version") != "v2.1":
+        raise ValueError(f"Expected LeRobot v2.1 in {root}, got {info.get('codebase_version')!r}")
+    features = info.get("features", {})
+    state = "state.pose" if settings["data"]["action_mode"] == "relative" else "state.joint"
+    required = {
+        state,
+        "action.pose",
+        *(f"observation.images.{camera}" for camera in g2_config.selected_cameras(settings)),
+    }
+    missing = required - features.keys()
+    if missing:
+        raise ValueError(f"Dataset is missing required features: {sorted(missing)}")
+
+
+def _run_stage(stage: str, snapshot: Path):
+    payload = g2_config.read_yaml(snapshot)
+    settings = payload["settings"]
+    _setup_runtime(settings)  # must precede importing JAX/LeRobot
+    config = g2_config.build_train_config(settings, tuple(payload["extra_args"]))
+    # scripts/ contains the official entrypoints, without needing to be a package.
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    if stage == "norm":
+        from compute_norm_stats import compute_norm_stats
+
+        compute_norm_stats(config, max_frames=settings["normalization"]["max_frames"])
+        signature = config.assets_dirs / settings["data"]["repo_id"] / "g2_norm_config.yaml"
+        signature.write_text(yaml.safe_dump(_norm_signature(settings), sort_keys=False))
+    else:
+        from train import main as train_main
+
+        train_main(config)
 
 
 def normalize_child_status(return_code: int) -> int:
@@ -217,7 +176,7 @@ def normalize_child_status(return_code: int) -> int:
     return return_code
 
 
-def _run_command(command: list[str], dry_run: bool) -> None:
+def _run_command(command: list[str], *, dry_run: bool) -> None:
     if dry_run:
         print(shlex.join(["uv", "run", *command]))
         return
@@ -237,131 +196,82 @@ def _run_command(command: list[str], dry_run: bool) -> None:
         signal.signal(signal.SIGTERM, previous[signal.SIGTERM])
     return_code = normalize_child_status(return_code)
     if return_code in (128 + signal.SIGINT, 128 + signal.SIGTERM):
-        print("\nTraining stopped after saving an interrupt checkpoint.", file=sys.stderr)
+        print("\nChild process interrupted; check its logs for checkpoint completion.", file=sys.stderr)
         raise SystemExit(return_code)
     if return_code != 0:
         raise subprocess.CalledProcessError(return_code, [sys.executable, *command])
 
 
+def _norm_signature(settings):
+    return {
+        "data_root": settings["data"]["root"],
+        "repo_id": settings["data"]["repo_id"],
+        "arm": settings["experiment"]["arm"],
+        "action_mode": settings["data"]["action_mode"],
+        "cameras": list(g2_config.selected_cameras(settings)),
+        "action_horizon": settings["model"]["action_horizon"],
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
-    raw = list(argv if argv is not None else sys.argv[1:])
-    args, rewritten, passthru = _parse_argv(raw)
-
-    preset_from_cli = _flag_present(rewritten, "--preset") or _flag_present(raw, "--smoke") or _flag_present(raw, "--full")
-    config_name_from_cli = _flag_present(rewritten, "--config-name")
-    config_name = resolve_config_name(
-        preset=args.preset,
-        config_name=args.config_name,
-        preset_from_cli=preset_from_cli,
-        config_name_from_cli=config_name_from_cli,
-    )
-
-    if args.arm != "both":
-        if config_name.endswith(("_left", "_right")):
-            if not config_name.endswith(f"_{args.arm}"):
-                raise ValueError("--arm disagrees with --config-name")
-        else:
-            config_name = f"{config_name}_{args.arm}"
-
-    if args.preset == "smoke":
-        if args.num_train_steps is None:
-            args.num_train_steps = 20
-        if args.batch_size is None:
-            args.batch_size = 1
-
-    wandb_mode = args.wandb
-    if wandb_mode == "auto":
-        wandb_mode = "off" if args.preset == "smoke" else "on"
-
-    exp_name = args.exp_name
-    if not exp_name:
-        prefix = "g2_vr_smoke" if args.preset == "smoke" else "g2_vr_pi05"
-        exp_name = f"{prefix}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    overwrite = False if args.resume else args.overwrite
-
-    norm_mode = args.norm
-    if args.force_norm:
-        norm_mode = "force"
-    elif args.skip_norm:
-        norm_mode = "skip"
-
-    os.chdir(PROJECT_ROOT)
-
-    if config_name == "pi05_g2_vr":
-        visible_gpu_count = len(os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(","))
-        if visible_gpu_count <= 1:
-            print(
-                f"WARN: {config_name} full fine-tune usually OOMs on a single 24GB GPU.",
-                file=sys.stderr,
-            )
-            print("      Use --preset low_mem, or add GPUs and --fsdp-devices.", file=sys.stderr)
-
-    norm_stats_path = resolve_under_project(
-        f"{args.assets_base_dir}/{config_name}/{args.repo_id}/norm_stats.json",
-        PROJECT_ROOT,
-    )
-    skip_norm = should_skip_norm(norm_mode, norm_stats_path)
-    ckpt_dir = resolve_under_project(
-        f"{args.checkpoint_base_dir}/{config_name}/{exp_name}",
-        PROJECT_ROOT,
-    )
-    wandb_on = wandb_enabled(wandb_mode, args.preset)
-
-    print("========================================")
-    print(f"pipeline:   norm_stats -> train (preset={args.preset})")
-    print(f"project:    {PROJECT_ROOT}")
-    print(f"config:     {config_name}")
-    print(f"exp:        {exp_name}")
-    print(f"data:       {os.environ.get('HF_LEROBOT_HOME', '<unset>')}/{args.repo_id}")
-    print(f"hf_cache:   {os.environ.get('HF_DATASETS_CACHE', '<unset>')}")
-    print(f"openpi:     {os.environ.get('OPENPI_DATA_HOME', '<unset>')}")
-    print(f"norm:       {norm_mode} (skip={skip_norm})")
-    print(f"max_frames: {args.max_frames if args.max_frames is not None else '<full>'}")
-    print(f"ckpt_dir:   {ckpt_dir}")
-    print(f"batch/steps:{args.batch_size if args.batch_size is not None else '<cfg>'} / {args.num_train_steps if args.num_train_steps is not None else '<cfg>'}")
-    print(f"save/log:   {args.save_interval if args.save_interval is not None else '<cfg>'} / {args.log_interval if args.log_interval is not None else '<cfg>'}")
-    print(f"wandb:      {wandb_on}  project={args.wandb_project}")
-    print(f"overwrite:  {overwrite}  resume={args.resume}")
-    print(f"GPU:        CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '0')}")
-    if args.dry_run:
-        print("dry_run:    true")
-    if passthru:
-        print(f"passthru:   {' '.join(passthru)}")
-    print("========================================")
-
-    norm_cmd = _build_norm_command(args, config_name)
-    train_cmd = _build_train_command(
-        args,
-        config_name=config_name,
-        exp_name=exp_name,
-        overwrite=overwrite,
-        wandb_on=wandb_on,
-        passthru=passthru,
-    )
-
-    if args.dry_run:
+    args, extra_args = _parse_argv(list(argv if argv is not None else sys.argv[1:]))
+    if hasattr(args, "stage"):
+        _run_stage(args.stage, args.resolved_config)
+        return
+    settings = _resolve(args)
+    if any(arg.startswith("--") and not arg.startswith(("--optimizer.", "--ema-decay")) for arg in extra_args):
+        raise ValueError("Configure model/data/training in YAML; '--' only accepts optimizer/EMA overrides")
+    _setup_runtime(settings)
+    name = g2_config.config_name(settings)
+    norm_path = Path(settings["checkpoints"]["assets_dir"]) / name / settings["data"]["repo_id"] / "norm_stats.json"
+    ckpt_dir = Path(settings["checkpoints"]["base_dir"]) / name / settings["experiment"]["name"]
+    skip_norm = should_skip_norm(settings["normalization"]["mode"], norm_path)
+    if skip_norm and settings["normalization"]["mode"] == "auto":
+        signature_path = norm_path.with_name("g2_norm_config.yaml")
+        skip_norm = signature_path.is_file() and g2_config.read_yaml(signature_path) == _norm_signature(settings)
+    norm_only = getattr(args, "norm_only", False)
+    dry_run = getattr(args, "dry_run", False)
+    payload = {"settings": settings, "extra_args": list(extra_args)}
+    print(f"YAML: {args.config.resolve()}\nTrainConfig: {name}\nCheckpoint: {ckpt_dir}")
+    print(f"Norm stats: {norm_path} (skip={skip_norm})")
+    print("Resolved experiment configuration:")
+    print(yaml.safe_dump(settings, sort_keys=False, allow_unicode=True), flush=True)
+    if dry_run:
+        print("[dry-run] No data access, downloads, normalization, or training.")
+        print(f"[1/2] {'reuse' if skip_norm else 'compute'} norm stats using the resolved config above")
+        if not norm_only:
+            print("[2/2] train using the same resolved config")
+        return
+    _check_dataset(settings)
+    if (
+        not norm_only
+        and ckpt_dir.exists()
+        and not (settings["checkpoints"]["resume"] or settings["checkpoints"]["overwrite"])
+    ):
+        raise FileExistsError(f"Experiment exists: {ckpt_dir}; choose a new experiment.name or use --resume")
+    if skip_norm and not norm_only and not norm_path.is_file():
+        raise FileNotFoundError(f"Cannot skip normalization: {norm_path} does not exist")
+    if settings["checkpoints"]["resume"] and not norm_only:
+        previous = ckpt_dir / g2_config.CHECKPOINT_CONFIG
+        if previous.is_file():
+            old = g2_config.read_yaml(previous)
+            # Resume may change total steps / logging / LR, but must preserve input/output semantics.
+            for section in ("data", "model"):
+                if old["settings"][section] != settings[section]:
+                    raise ValueError(f"Cannot resume with changed {section} settings; use a new experiment.name")
+    with tempfile.TemporaryDirectory(prefix="g2-train-", dir="/tmp") as temporary:
+        snapshot = Path(temporary) / g2_config.CHECKPOINT_CONFIG
+        snapshot.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True))
+        worker = [str(Path(__file__).resolve()), "--resolved-config", str(snapshot)]
         if not skip_norm:
-            _run_command(norm_cmd, dry_run=True)
+            print("[1/2] Computing norm stats", flush=True)
+            _run_command([*worker, "--stage", "norm"], dry_run=False)
         else:
-            print(f"[dry-run] skip norm stats (reuse {norm_stats_path})")
-        if not args.norm_only:
-            _run_command(train_cmd, dry_run=True)
-        return
-
-    if not skip_norm:
-        print("\n[1/2] compute_norm_stats ...")
-        _run_command(norm_cmd, dry_run=False)
-    else:
-        print(f"\n[1/2] compute_norm_stats skipped (reuse {norm_stats_path})")
-
-    if args.norm_only:
-        print(f"\ndone. norm stats: {norm_stats_path}")
-        return
-
-    print("\n[2/2] train ...")
-    _run_command(train_cmd, dry_run=False)
-    print(f"\ndone. checkpoints: {ckpt_dir}")
+            print(f"[1/2] Reusing {norm_path}", flush=True)
+        if not norm_only:
+            print("[2/2] Training", flush=True)
+            _run_command([*worker, "--stage", "train"], dry_run=False)
+    print(f"Done: {norm_path if norm_only else ckpt_dir}")
 
 
 if __name__ == "__main__":

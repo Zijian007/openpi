@@ -32,11 +32,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 #   pi05_g2_vr_low_mem  LoRA
 #   pi05_g2_vr          全参
 ARM="${ARM:-both}"  # must match training
-CONFIG_NAME="pi05_g2_vr_low_mem"
+CONFIG_NAME="pi05_g2_vr_low_mem_right"
 
 # checkpoint 的 step 目录（…/<exp>/<step>），相对仓库根或绝对路径。
 # 空 = 在 checkpoints/$CONFIG_NAME/ 里选最近写入的实验，再取该实验数值最大的 step。
-POLICY_DIR="/home/zijianwang/work/openpi/checkpoints/pi05_g2_vr_low_mem/vr_Sing_TeaPi/29999"
+POLICY_DIR="/home/zijianwang/openpi/checkpoints/pi05_g2_vr_low_mem_right/Sing_TeaPi/10000"
 
 CHECKPOINT_BASE_DIR="./checkpoints"
 

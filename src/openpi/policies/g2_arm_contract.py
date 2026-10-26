@@ -33,11 +33,38 @@ def _parse_image(image) -> np.ndarray:
     return image
 
 
-def prepare_inputs(data: dict, arm: str = "both") -> dict:
+def selected_camera_ids(arm: str = "both", cameras: tuple[str, ...] | None = None) -> tuple[str, ...]:
+    arm_slice(arm, 20)
+    available = (
+        ("head_color", "hand_left_color", "hand_right_color")
+        if arm == "both"
+        else (
+            "head_color",
+            f"hand_{arm}_color",
+        )
+    )
+    selected = available if cameras is None else tuple(cameras)
+    if "head_color" not in selected or len(set(selected)) != len(selected) or not set(selected) <= set(available):
+        raise ValueError(
+            f"Invalid cameras {selected!r} for arm={arm}; include head_color and use a subset of {available}"
+        )
+    return selected
+
+
+def prepare_inputs(data: dict, arm: str = "both", cameras: tuple[str, ...] | None = None) -> dict:
+    selected = selected_camera_ids(arm, cameras)
     base_image = _parse_image(data["observation/image"])
     selection = arm_slice(arm, np.asarray(data["observation/state"]).shape[-1])
-    left_wrist = _parse_image(data["observation/wrist_image_left"]) if arm != "right" else np.zeros_like(base_image)
-    right_wrist = _parse_image(data["observation/wrist_image_right"]) if arm != "left" else np.zeros_like(base_image)
+    left_wrist = (
+        _parse_image(data["observation/wrist_image_left"])
+        if "hand_left_color" in selected
+        else np.zeros_like(base_image)
+    )
+    right_wrist = (
+        _parse_image(data["observation/wrist_image_right"])
+        if "hand_right_color" in selected
+        else np.zeros_like(base_image)
+    )
 
     inputs = {
         "state": np.asarray(data["observation/state"])[..., selection].copy(),
@@ -48,8 +75,8 @@ def prepare_inputs(data: dict, arm: str = "both") -> dict:
         },
         "image_mask": {
             "base_0_rgb": np.True_,
-            "left_wrist_0_rgb": np.bool_(arm != "right"),
-            "right_wrist_0_rgb": np.bool_(arm != "left"),
+            "left_wrist_0_rgb": np.bool_("hand_left_color" in selected),
+            "right_wrist_0_rgb": np.bool_("hand_right_color" in selected),
         },
     }
 

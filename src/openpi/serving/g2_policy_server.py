@@ -22,6 +22,7 @@ class G2PolicyServer(WebsocketPolicyServer):
         super().__init__(policy, host=host, port=port, metadata=metadata)
         native = dict(metadata or {})
         self._arm = native.get('arm', 'both')
+        self._requires_joint_state = bool(native.get('requires_joint_state', False))
         required = native.get('camera_ids', protocol.cameras_for_arm(self._arm))
         self._contract = dict(
             policy_hz=native.get('policy_hz', 30.0),
@@ -30,6 +31,7 @@ class G2PolicyServer(WebsocketPolicyServer):
             required_cameras=required, image_resize='letterbox',
             image_sizes={key: [224, 224] for key in required},
             rtc_supported=bool(native.get('rtc_supported', False)),
+            requires_joint_state=self._requires_joint_state,
             extensions={'backend': 'openpi', 'policy_type': 'pi05'},
         )
         protocol.build_metadata(**self._contract)  # Fail before listening on invalid capabilities.
@@ -47,7 +49,8 @@ class G2PolicyServer(WebsocketPolicyServer):
                 payload = codec.loads(raw, encoding=encoding)
                 request = protocol.parse_request(payload, metadata=metadata)
                 unpack_ms = (time.monotonic() - start) * 1000
-                obs = {'observation/state': request['state'], 'prompt': request['prompt']}
+                state = request['joint_state'] if self._requires_joint_state else request['state']
+                obs = {'observation/state': state, 'prompt': request['prompt']}
                 obs.update({_NATIVE_IMAGES[key]: image for key, image in request['images'].items()})
                 if request['rtc_enabled']:
                     obs.update(rtc_enabled=True, inference_delay=request['inference_delay'])

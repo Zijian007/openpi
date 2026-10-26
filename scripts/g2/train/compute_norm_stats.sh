@@ -1,8 +1,26 @@
 #!/usr/bin/env bash
-# Compute norm stats only (step 1 of train_pipeline.sh).
-#
-#   bash scripts/g2/train/compute_norm_stats.sh
-#   bash scripts/g2/train/compute_norm_stats.sh --config-name pi05_g2_vr_low_mem
-
+# Compute normalization statistics using config.yaml.
+# Edit training parameters in config.yaml, then run this script without arguments.
 set -euo pipefail
-exec bash "$(dirname "${BASH_SOURCE[0]}")/train_pipeline.sh" --norm-only "$@"
+
+if [[ $# -ne 0 ]]; then
+  echo "ERROR: this launcher takes no arguments; edit scripts/g2/train/config.yaml." >&2
+  echo "For previews or CLI overrides, run .venv/bin/python scripts/g2/train/train_pipeline.py directly." >&2
+  exit 2
+fi
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+CONFIG_FILE="${PROJECT_ROOT}/scripts/g2/train/config.yaml"
+
+# Shared HF / model caches; Python reads dataset and proxy settings from YAML.
+# shellcheck disable=SC1091
+source "${PROJECT_ROOT}/scripts/g2/_env.sh"
+cd "${PROJECT_ROOT}"
+
+if [[ ! -x "${PROJECT_ROOT}/.venv/bin/python" ]]; then
+  echo "ERROR: missing ${PROJECT_ROOT}/.venv — run bash scripts/g2/bootstrap.sh --no-proxy" >&2
+  exit 1
+fi
+
+exec "${PROJECT_ROOT}/.venv/bin/python" scripts/g2/train/train_pipeline.py \
+  --config "${CONFIG_FILE}" --norm-only

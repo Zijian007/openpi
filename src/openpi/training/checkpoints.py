@@ -11,6 +11,7 @@ from etils import epath
 import jax
 import orbax.checkpoint as ocp
 import orbax.checkpoint.future as future
+import yaml
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
@@ -68,6 +69,8 @@ def save_state(
     state: training_utils.TrainState,
     data_loader: _data_loader.DataLoader,
     step: int,
+    *,
+    g2_training_config: dict | None = None,
 ):
     def save_assets(directory: epath.Path):
         # Save the normalization stats.
@@ -75,6 +78,10 @@ def save_state(
         norm_stats = data_config.norm_stats
         if norm_stats is not None and data_config.asset_id is not None:
             _normalize.save(directory / data_config.asset_id, norm_stats)
+        if g2_training_config is not None:
+            from openpi.training.g2_config import CHECKPOINT_CONFIG
+
+            (directory / CHECKPOINT_CONFIG).write_text(yaml.safe_dump(g2_training_config, sort_keys=False))
 
     # Split params that can be used for inference into a separate item.
     with at.disable_typechecking():
@@ -139,13 +146,14 @@ def find_norm_stats_dir(assets_dir: epath.Path | str, asset_id: str | None = Non
     if matches:
         listed = "\n  ".join(str(path) for path in matches)
         raise FileNotFoundError(
-            f"Norm stats not found at {expected}/norm_stats.json. "
-            f"Multiple copies exist under {assets_dir}:\n  {listed}"
+            f"Norm stats not found at {expected}/norm_stats.json. Multiple copies exist under {assets_dir}:\n  {listed}"
         )
     raise FileNotFoundError(f"Norm stats file not found at: {expected}/norm_stats.json")
 
 
-def load_norm_stats(assets_dir: epath.Path | str, asset_id: str | None = None) -> dict[str, _normalize.NormStats] | None:
+def load_norm_stats(
+    assets_dir: epath.Path | str, asset_id: str | None = None
+) -> dict[str, _normalize.NormStats] | None:
     norm_stats_dir = find_norm_stats_dir(assets_dir, asset_id)
     norm_stats = _normalize.load(norm_stats_dir)
     logging.info(f"Loaded norm stats from {norm_stats_dir}")

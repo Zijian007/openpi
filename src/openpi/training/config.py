@@ -484,6 +484,8 @@ class LeRobotG2DataConfig(DataConfigFactory):
     # Chunk-relative EE pose (OpenPI DeltaActions). False → absolute pose labels; state=joints.
     use_delta_actions: bool = True
     arm: str = "both"
+    # None selects the head and both/selected wrist cameras. Explicit subsets require the head.
+    cameras: tuple[str, ...] | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -494,6 +496,7 @@ class LeRobotG2DataConfig(DataConfigFactory):
             raise ValueError("single-arm G2 currently requires use_delta_actions=True")
         g2 = g2_contract.G2
         cams = g2.cameras
+        selected = g2_policy.selected_camera_ids(self.arm, self.cameras)
         state_key = g2.columns.proprio_key(delta_actions=self.use_delta_actions)
         repack_transform = _transforms.Group(
             inputs=[
@@ -510,13 +513,14 @@ class LeRobotG2DataConfig(DataConfigFactory):
             ]
         )
 
-        if self.arm != "both":
-            mapping = dict(repack_transform.inputs[0].structure)
-            mapping.pop("observation/wrist_image_left" if self.arm == "right" else "observation/wrist_image_right")
-            repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(mapping)])
+        mapping = dict(repack_transform.inputs[0].structure)
+        for side, camera in (("left", cams.hand_left), ("right", cams.hand_right)):
+            if camera not in selected:
+                mapping.pop(f"observation/wrist_image_{side}")
+        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(mapping)])
 
         data_transforms = _transforms.Group(
-            inputs=[g2_policy.G2Inputs(model_type=model_config.model_type, arm=self.arm)],
+            inputs=[g2_policy.G2Inputs(model_type=model_config.model_type, arm=self.arm, cameras=selected)],
             outputs=[g2_policy.G2Outputs(action_dim=20 if self.arm == "both" else 10)],
         )
 
@@ -604,6 +608,9 @@ class TrainConfig:
 
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
+
+    # Resolved YAML settings captured with G2 checkpoints, including data/model semantics.
+    g2_training_config: tyro.conf.Suppress[dict[str, Any] | None] = None
 
     # If the value is greater than 1, FSDP will be enabled and shard across number of specified devices; overall
     # device memory will be reduced but training could potentially be slower.
