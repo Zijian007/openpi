@@ -159,7 +159,7 @@ ARM=right bash scripts/g2/deploy/serve_policy.sh \
 
 ## G2 通信协议
 
-G2 部署使用独立 `g2-policy-protocol==0.4.1` 的 `g2.policy.v2`，与 wholebody/G2_pi 共用单份 JSON Schema。
+G2 部署使用独立 `g2-policy-protocol==0.5.0`。同一发行包提供 `g2.policy.v2` 与 `g2.policy.v3`，与 wholebody/G2_pi 共用。v3 握手（含 `action_spec` 等字段）必须搭配 0.5.0 域控，0.4.1 client 会在连接时拒绝。
 `uv sync` 从相邻 `../g2-policy-protocol` 安装包；仅部署 wheel 时，将 `tool.uv.sources.g2-policy-protocol.path` 改为本地 wheel 文件路径，再 `uv lock && uv sync`。
 `serve_policy.py` 对 robot=g2 的 metadata 选择 `G2PolicyServer`；非 G2 模型保留原生 OpenPI server。
 G2 server 在入口把标准观测映射成模型内部的 `observation/*`，JPEG 解码、RTC、单臂扩展和图像处理保持在适配层。

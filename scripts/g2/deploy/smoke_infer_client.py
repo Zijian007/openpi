@@ -138,7 +138,7 @@ def main(args: Args) -> int:
             t0 = time.monotonic()
             client.send(codec.dumps(request))
             out = codec.loads(client.recv())
-            actions = protocol.parse_response(out, request_id=i)
+            actions = protocol.parse_response(out, request_id=i, metadata=meta)
             _check_actions(actions, step=i)
             logger.info("step %d: roundtrip=%.1f ms timing=%s", i,
                         (time.monotonic()-t0)*1000, out.get("server_timing", {}))

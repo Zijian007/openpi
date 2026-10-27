@@ -19,10 +19,10 @@ _NATIVE_IMAGES = dict(zip(protocol.CAMERA_IDS, (
 
 
 def connection_metadata(policy_metadata):
-    """Copy the checkpoint fields that belong on the g2.policy.v2 handshake.
+    """Copy checkpoint fields onto the G2 handshake.
 
-    ``action_dim`` and ``model_action_dim`` stay on the policy for RTC prefix width.
-    The client always receives actions of shape (T, 20).
+    Default ``build_metadata`` is v2 pose20. A v3 server passes ``version=3``.
+    ``action_dim`` / ``model_action_dim`` stay on the policy for RTC prefix width.
     """
     native = dict(policy_metadata or {})
     arm = native.get('arm', 'both')
@@ -81,6 +81,7 @@ class G2PolicyServer(WebsocketPolicyServer):
                     raise ValueError('OpenPI adapter requires expanded 20-D or padded 32-D actions')
                 response = protocol.build_response(
                     request_id=request['request_id'], actions=actions[:, :protocol.POSE_DIM],
+                    metadata=metadata,
                     server_timing=dict(infer_ms=infer_ms, unpack_ms=unpack_ms, decode_ms=decode_ms,
                                        process_ms=(time.monotonic() - start) * 1000),
                     policy_timing=result.get('policy_timing'), rtc_info=result.get('rtc_info'),
