@@ -30,6 +30,7 @@ import tyro
 from websockets.sync.client import connect
 
 from openpi.adapters.g2.transforms import G2_ACTION_DIM
+from openpi.adapters.g2.transforms import make_g2_example
 
 logger = logging.getLogger("g2.smoke_infer")
 
@@ -61,7 +62,7 @@ def _make_obs(args: Args) -> dict:
             "observation/wrist_image_right": np.zeros((224, 224, 3), dtype=np.uint8),
             "prompt": args.prompt,
         }
-    obs = g2_policy.make_g2_example()
+    obs = make_g2_example()
     obs["prompt"] = args.prompt
     return obs
 

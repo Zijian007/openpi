@@ -24,12 +24,14 @@ def test_shell_launches_adapter_with_optional_dependency(tmp_path):
     binary = tmp_path / "bin"
     binary.mkdir()
     uv = binary / "uv"
-    uv.write_text(f"#!{sys.executable}\nimport json, sys\nprint('LAUNCH=' + json.dumps(sys.argv[1:]))\n")
+    uv.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                  "assert 'VIRTUAL_ENV' not in os.environ\n"
+                  "print('LAUNCH=' + json.dumps(sys.argv[1:]))\n")
     uv.chmod(0o755)
     result = subprocess.run(
         ["bash", str(entry), "--no-warmup", "--no-rtc"],
         cwd=root,
-        env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}", "VIRTUAL_ENV": "/other/active-venv"},
         capture_output=True,
         text=True,
         check=True,

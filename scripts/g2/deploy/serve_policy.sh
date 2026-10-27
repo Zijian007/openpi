@@ -3,4 +3,5 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 cd "${G2_OPENPI_PROJECT_ROOT}"
-exec uv run --extra g2 scripts/g2/deploy/serve_policy.py "$@"
+# This server always uses OpenPI's project environment, even from the robot venv.
+exec env -u VIRTUAL_ENV uv run --extra g2 scripts/g2/deploy/serve_policy.py "$@"
