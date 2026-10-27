@@ -9,7 +9,6 @@ import json
 import math
 import os
 from pathlib import Path
-import shlex
 import signal
 import subprocess
 import sys
@@ -19,6 +18,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from openpi.adapters.g2 import config as g2_config
+from openpi.adapters.g2 import settings_schema
 
 PROJECT_ROOT = g2_config.PROJECT_ROOT
 
@@ -32,10 +32,6 @@ def should_skip_norm(norm_mode: str, norm_stats_file: Path) -> bool:
     return norm_mode == "skip" or (norm_mode == "auto" and norm_stats_file.is_file())
 
 
-def wandb_enabled(wandb_mode: str, preset: str) -> bool:
-    return wandb_mode == "on" or (wandb_mode == "auto" and preset != "smoke")
-
-
 def _parse_argv(argv: list[str]):
     if "--" in argv:
         split_at = argv.index("--")
@@ -46,16 +42,40 @@ def _parse_argv(argv: list[str]):
     parser.add_argument(
         "--config", type=Path, default=g2_config.DEFAULT_CONFIG, help="YAML file; paths are relative to repo root"
     )
-    parser.add_argument("--preset", choices=("low_mem", "full_ft", "smoke"))
-    parser.add_argument("--smoke", dest="preset", action="store_const", const="smoke")
+    parser.add_argument("--preset", choices=tuple(g2_config.PRESET_CONFIG_NAMES))
+    parser.add_argument("--smoke", action=argparse.BooleanOptionalAction, help="short run; preserves all module modes")
     parser.add_argument("--full", dest="preset", action="store_const", const="full_ft")
     parser.add_argument("--arm", choices=("both", "left", "right"))
+    for module in ("vision", "language", "action-expert"):
+        parser.add_argument(f"--{module}-mode", choices=("frozen", "lora", "full"))
     for flag in ("exp-name", "repo-id", "data-root", "checkpoint-base-dir", "assets-base-dir", "params-path"):
         parser.add_argument(f"--{flag}")
     parser.add_argument("--state-space", choices=("joint", "eef", "both"))
+    parser.add_argument("--state-mode", choices=("absolute", "relative"))
+    parser.add_argument("--state-spatial", choices=tuple(settings_schema.STATE_METHODS))
+    parser.add_argument("--state-anchor", choices=tuple(settings_schema.REFERENCES))
     parser.add_argument(
+        "--action-encoding",
         "--action-representation",
+        dest="action_representation",
         choices=("absolute", "component_delta", "se3_body_delta", "se3_spatial_delta", "hybrid_delta"),
+        help="legacy encoding selector; new configs use --action-mode/--action-spatial",
+    )
+    for key, choices in (
+        ("quantity", tuple(settings_schema.ACTION_QUANTITIES)),
+        ("source", ("command", "measured")),
+        ("mode", ("absolute", "relative")),
+        ("anchor", tuple(settings_schema.REFERENCES)),
+        ("reference-scope", tuple(settings_schema.REFERENCE_SCOPES)),
+    ):
+        parser.add_argument(f"--action-{key}", choices=choices)
+    parser.add_argument(
+        "--action-spatial", "--action-method", dest="action_spatial", choices=tuple(settings_schema.ACTION_METHODS)
+    )
+    parser.add_argument(
+        "--action-strategy",
+        choices=tuple(settings_schema.REFERENCE_STRATEGIES),
+        help="legacy alias for reference scope",
     )
     for flag in (
         "batch-size",
@@ -95,7 +115,7 @@ def _resolve(args):
         overrides["arm"] = os.environ["ARM"]
     settings = g2_config.resolve_settings(g2_config.load_settings(args.config), overrides)
     if not settings["experiment"]["name"]:
-        prefix = "g2_vr_smoke" if settings["experiment"]["preset"] == "smoke" else "g2_vr_pi05"
+        prefix = "g2_vr_smoke" if settings["run"]["smoke"] else "g2_vr_pi05"
         stamp = dt.datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S_%f")
         settings["experiment"]["name"] = f"{prefix}_{stamp}"
     for section, key in (("data", "root"), ("checkpoints", "base_dir"), ("checkpoints", "assets_dir")):
@@ -154,7 +174,7 @@ def _check_dataset(settings):
             "relative_to"
         ] == "object_pose":
             required.add("reference.object_pose")
-        if policy["state"]["representation"] == "relative" and state in ("joint", "both"):
+        if policy["state"]["representation"] != "absolute" and state in ("joint", "both"):
             required.add("reference.object_joint")
     if policy["pose"]["base_to_parent"] == "observation":
         required.add("reference.base_to_parent")
@@ -221,10 +241,7 @@ def normalize_child_status(return_code: int) -> int:
     return return_code
 
 
-def _run_command(command: list[str], *, dry_run: bool) -> None:
-    if dry_run:
-        print(shlex.join(["uv", "run", *command]))
-        return
+def _run_command(command: list[str]) -> None:
     # Ignore SIGINT/SIGTERM here so Ctrl+C reaches train.py, which saves the current
     # step. This process keeps waiting until that checkpoint write finishes.
     process = subprocess.Popen([sys.executable, *command], cwd=PROJECT_ROOT)
@@ -263,8 +280,7 @@ def main(argv: list[str] | None = None) -> None:
         _run_stage(args.stage, args.resolved_config)
         return
     settings = _resolve(args)
-    if any(arg.startswith("--") and not arg.startswith(("--optimizer.", "--ema-decay")) for arg in extra_args):
-        raise ValueError("Configure model/data/training in YAML; '--' only accepts optimizer/EMA overrides")
+    g2_config.validate_extra_args(extra_args)
     _setup_runtime(settings)
     name = g2_config.preset_name(settings)
     norm_path = Path(settings["checkpoints"]["assets_dir"]) / name / settings["data"]["repo_id"] / "norm_stats.json"
@@ -279,7 +295,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"YAML: {args.config.resolve()}\nTrainConfig: {name}\nCheckpoint: {ckpt_dir}")
     print(f"Norm stats: {norm_path} (skip={skip_norm})")
     print("Resolved experiment configuration:")
-    print(yaml.safe_dump(settings, sort_keys=False, allow_unicode=True), flush=True)
+    print(yaml.safe_dump(g2_config.public_settings(settings), sort_keys=False, allow_unicode=True), flush=True)
     print("Derived policy contract:")
     print(yaml.safe_dump(g2_config.describe_policy(settings), sort_keys=False, allow_unicode=True), flush=True)
     if dry_run:
@@ -301,10 +317,13 @@ def main(argv: list[str] | None = None) -> None:
         previous = ckpt_dir / g2_config.CHECKPOINT_CONFIG
         if previous.is_file():
             old = g2_config.upgrade_settings(g2_config.read_yaml(previous)["settings"])
+            if old["finetuning"] != settings["finetuning"]:
+                raise ValueError("Cannot resume with changed finetuning modes; use a new experiment.name")
             # Resume may change total steps / logging / LR, but must preserve input/output semantics.
-            for section in ("data", "model"):
-                if old[section] != settings[section]:
-                    raise ValueError(f"Cannot resume with changed {section} settings; use a new experiment.name")
+            if old["data"] != settings["data"]:
+                raise ValueError("Cannot resume with changed data settings; use a new experiment.name")
+            if g2_config.model_semantics(old) != g2_config.model_semantics(settings):
+                raise ValueError("Cannot resume with changed model settings; use a new experiment.name")
             if (
                 g2_config.policy_semantics(old) != g2_config.policy_semantics(settings)
                 or old["experiment"]["arm"] != settings["experiment"]["arm"]
@@ -316,12 +335,12 @@ def main(argv: list[str] | None = None) -> None:
         worker = [str(Path(__file__).resolve()), "--resolved-config", str(snapshot)]
         if not skip_norm:
             print("[1/2] Computing norm stats", flush=True)
-            _run_command([*worker, "--stage", "norm"], dry_run=False)
+            _run_command([*worker, "--stage", "norm"])
         else:
             print(f"[1/2] Reusing {norm_path}", flush=True)
         if not norm_only:
             print("[2/2] Training", flush=True)
-            _run_command([*worker, "--stage", "train"], dry_run=False)
+            _run_command([*worker, "--stage", "train"])
     print(f"Done: {norm_path if norm_only else ckpt_dir}")
 
 

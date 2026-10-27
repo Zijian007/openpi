@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Short LoRA smoke run using scripts/g2/train/config.yaml.
+# Short run preserving the selected model and module modes; --config PATH selects YAML.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
-g2_openpi_no_launcher_args "$@"
-g2_openpi_run_train --smoke
+g2_openpi_run_train --smoke "$@"

@@ -54,3 +54,28 @@ def test_episode_reference_is_isolated_per_session_and_reset():
     np.testing.assert_allclose(a.infer({"observation/state": third})["actions"][0, :3], first[:3])
     a.reset()
     np.testing.assert_allclose(a.infer({"observation/state": third})["actions"][0, :3], third[:3])
+
+
+def test_history_fallback_preserves_order_and_copies_observation_frames():
+    import copy
+
+    from openpi.adapters.g2.config import POLICY_DEFAULTS
+    from openpi.adapters.g2.tests.geometry_test import poses
+
+    settings = copy.deepcopy(POLICY_DEFAULTS)
+    settings["timing"]["history_steps"] = 3
+    seen = []
+
+    def infer(obs):
+        seen.append(obs)
+        return {"actions": np.zeros((2, 20), np.float32)}
+
+    wrapper = G2Policy(SimpleNamespace(metadata={"arm": "both"}, infer=infer), settings)
+    frames = [poses(i) for i in range(4)]
+    expected = [frame.copy() for frame in frames]
+    for i, frame in enumerate(frames):
+        wrapper.infer({"observation/state": frame, "observation/image": np.full((8, 8, 3), i, np.uint8)})
+        indices = [max(0, j) for j in range(i - 2, i + 1)]
+        np.testing.assert_array_equal(seen[-1]["observation/pose_history"], np.stack([expected[j] for j in indices]))
+        np.testing.assert_array_equal(seen[-1]["observation/image"][:, 0, 0, 0], indices)
+        frame[:] = -1  # Subsequent history must use the captured values, not caller-owned buffers.

@@ -10,6 +10,7 @@ from openpi_client import msgpack_numpy
 
 from openpi.adapters.g2.config import needs_joint_state
 from openpi.adapters.g2.config import needs_measured_pose
+from openpi.adapters.g2.contract import CAMERA_OBSERVATION_KEYS
 
 try:
     import cv2
@@ -17,22 +18,7 @@ except ImportError:
     cv2 = None
 
 logger = logging.getLogger(__name__)
-# Wire camera id → OpenPI observation key. ``prepare_inputs`` renames those again
-# to base_0_rgb / left_wrist_0_rgb / right_wrist_0_rgb for the model.
-_NATIVE_IMAGES = dict(
-    zip(
-        protocol.CAMERA_IDS,
-        (
-            "observation/image",
-            "observation/wrist_image_left",
-            "observation/wrist_image_right",
-        ),
-        strict=True,
-    )
-)
-
-
-_JPEG_IMAGE_KEYS = tuple(_NATIVE_IMAGES.values())
+_JPEG_IMAGE_KEYS = tuple(CAMERA_OBSERVATION_KEYS.values())
 
 
 def _warmup_jpeg_transport() -> None:
@@ -174,11 +160,11 @@ class OpenPIBackend:
             obs["observation/time_ns"] = request["observation_time_ns"]
         for name, value in request.get("context", {}).items():
             if name == "image_history":
-                obs.update({_NATIVE_IMAGES[camera]: frames for camera, frames in value.items()})
+                obs.update({CAMERA_OBSERVATION_KEYS[camera]: frames for camera, frames in value.items()})
             else:
                 obs[f"observation/{name}"] = value
         for camera, image in request["images"].items():
-            obs.setdefault(_NATIVE_IMAGES[camera], image)
+            obs.setdefault(CAMERA_OBSERVATION_KEYS[camera], image)
         if request["rtc_enabled"]:
             obs.update(rtc_enabled=True, inference_delay=request["inference_delay"])
             if request["prev_chunk_left_over"] is not None:
@@ -188,7 +174,7 @@ class OpenPIBackend:
         # Histories were already validated as raw RGB by the shared protocol.
         if protocol.observation_contract(self.metadata)["history_steps"] == 1:
             protocol.validate_images(
-                {camera: obs[_NATIVE_IMAGES[camera]] for camera in request["images"]},
+                {camera: obs[CAMERA_OBSERVATION_KEYS[camera]] for camera in request["images"]},
                 metadata=self.metadata,
                 decoded=True,
             )

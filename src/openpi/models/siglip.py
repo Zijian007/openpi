@@ -15,12 +15,14 @@
 """A refactored and simplified ViT adoptation for Pi, taken from big_vision."""
 
 from collections.abc import Sequence
+import functools
 
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from openpi.models import lora
 import openpi.training.sharding as sharding
 
 
@@ -79,17 +81,21 @@ class Encoder1DBlock(nn.Module):
     num_heads: int = 12
     dropout: float = 0.0
     dtype_mm: str = "float32"
+    lora_config: lora.LoRAConfig | None = None
 
     @nn.compact
     def __call__(self, x, deterministic=True):  # noqa: FBT002
         out = {}
         x = sharding.activation_sharding_constraint(x)
         y = nn.LayerNorm(dtype=self.dtype_mm)(x)
+        projection = functools.partial(lora.DotGeneral, config=self.lora_config) if self.lora_config else None
         y = out["sa"] = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
             kernel_init=nn.initializers.xavier_uniform(),
             deterministic=deterministic,
             dtype=self.dtype_mm,
+            qkv_dot_general_cls=projection,
+            out_dot_general_cls=projection,
         )(y, y)
         y = sharding.activation_sharding_constraint(y)
         y = nn.Dropout(rate=self.dropout)(y, deterministic)
@@ -118,6 +124,7 @@ class Encoder(nn.Module):
     scan: bool = False
     remat_policy: str = "nothing_saveable"
     dtype_mm: str = "float32"
+    lora_config: lora.LoRAConfig | None = None
 
     @nn.compact
     def __call__(self, x, deterministic=True):  # noqa: FBT002
@@ -142,6 +149,7 @@ class Encoder(nn.Module):
                 mlp_dim=self.mlp_dim,
                 num_heads=self.num_heads,
                 dropout=self.dropout,
+                lora_config=self.lora_config,
             )(x, deterministic)
             for lyr in range(self.depth):
                 out[f"block{lyr:02d}"] = jax.tree.map(lambda o, lyr=lyr: o[lyr], scan_out)
@@ -154,6 +162,7 @@ class Encoder(nn.Module):
                     mlp_dim=self.mlp_dim,
                     num_heads=self.num_heads,
                     dropout=self.dropout,
+                    lora_config=self.lora_config,
                 )
                 x, out[f"block{lyr:02d}"] = block_cur(x, deterministic)
             out["pre_ln"] = x  # Alias for last block, but without the number in it.
@@ -203,6 +212,8 @@ class _Module(nn.Module):
     # or "dots_with_no_batch_dims_saveable" for more speed (memory costly)
     remat_policy: str = "nothing_saveable"
     dtype_mm: str = "float32"
+    # Optional attention Q/K/V/O adapters; None preserves the original parameter tree.
+    lora_config: lora.LoRAConfig | None = None
 
     @nn.compact
     def __call__(self, image, *, train=False):
@@ -247,6 +258,7 @@ class _Module(nn.Module):
             remat_policy=self.remat_policy,
             dtype_mm=self.dtype_mm,
             name="Transformer",
+            lora_config=self.lora_config,
         )(x, deterministic=not train)
         encoded = out["encoded"] = x
 

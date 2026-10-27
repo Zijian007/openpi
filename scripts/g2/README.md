@@ -1,203 +1,112 @@
-# G2 wholebody × OpenPI π₀.₅（并行于 `~/work/G2_pi`）
+# G2 × OpenPI π₀.₅
 
-与 **LeRobot v3 + PEFT** 路线独立：本目录吃 **LeRobot v2.1**，JAX/OpenPI 训练与部署。
+G2 的 LeRobot v2.1 数据训练和 WebSocket 推理入口，使用 JAX/OpenPI。
+策略适配代码位于 [`src/openpi/adapters/g2/`](../../src/openpi/adapters/g2/)；
+这里集中放配置、启动脚本、使用文档及入口测试。
 
-| | OpenPI 线（本仓） | LeRobot 线 |
-|--|------------------|------------|
-| 训练 | [openpi-pi05-train-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md) | [lerobot-pi05-train-g2.md](../../../g2_wzj_docs/ops/ml/lerobot-pi05-train-g2.md) |
-| 部署 | [openpi-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md) | [lerobot-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/lerobot-pi05-deploy-g2.md) |
-
-## 布局
+## 文件布局
 
 ```text
-~/openpi/
-  scripts/g2/
-    _env.sh / bootstrap.sh / README.md   # 共享
-    train/                               # norm + 训练
-    deploy/                              # serve_policy + smoke client
-    tests/                               # 训练/部署入口回归测试
-  data/<data.repo_id>/                   # HF_LEROBOT_HOME + train/config.yaml（仅 v2.1）
-  src/openpi/adapters/g2/             # 配置、数据变换、policy 包装、协议与服务
-  checkpoints/
-
-~/work/G2_pi/                            # 另一条：v3 + PEFT（勿共用 .venv / data）
+scripts/g2/
+├── README.md                  # 导航与快速开始
+├── bootstrap.sh               # 安装依赖，可选下载基础权重
+├── _env.sh                    # 共享路径、缓存和启动函数
+├── configs/                   # 日常修改的配置
+│   ├── train.yaml             # 数据、策略、模型和训练参数
+│   └── deploy.yaml            # checkpoint、GPU、端口、预热和 RTC
+├── train/                     # 统计量与训练入口
+│   ├── train_pipeline.py      # 配置解析 → norm → train
+│   ├── train_pipeline.sh      # 按 train.yaml 正常训练
+│   ├── train_smoke.sh         # 20 步短跑
+│   ├── train_full.sh          # 全参微调
+│   └── compute_norm_stats.sh  # 只计算统计量
+├── deploy/                    # 推理服务与通信检查
+│   ├── serve_policy.py
+│   ├── serve_policy.sh
+│   ├── smoke_infer_client.py
+│   └── smoke_infer_client.sh
+├── docs/
+│   ├── training.md            # 数据准备、训练、续训和单臂
+│   ├── deployment.md          # 加载 checkpoint、预热和推理检查
+│   ├── policy.md              # 状态、动作、坐标系、时间与协议
+│   ├── rtc.md                 # RTC 前缀引导和客户端调度
+│   └── architecture.md        # 适配层职责与原生 OpenPI 边界
+└── tests/                     # 启动入口回归测试
 ```
 
-## 一次安装
+所有命令从 OpenPI 仓库根目录运行；配置中的相对数据、权重和输出路径也以仓库根目录为基准。
+数据、统计量和权重分别放在仓库的 `data/`、`assets/`、`checkpoints/`，不放在脚本目录。
+
+## 快速开始
+
+1. 安装：`bash scripts/g2/bootstrap.sh`；加 `--download-base` 可下载 `pi05_base`。
+2. 准备 LeRobot **v2.1** 数据，并修改 [`configs/train.yaml`](configs/train.yaml) 的数据路径、选臂和训练设置。
+3. 预览后短跑，再启动正式训练：
+
+   ```bash
+   .venv/bin/python scripts/g2/train/train_pipeline.py --dry-run
+   bash scripts/g2/train/train_smoke.sh
+   bash scripts/g2/train/train_pipeline.sh
+   ```
+
+4. 修改 [`configs/deploy.yaml`](configs/deploy.yaml) 的 checkpoint 和进程设置，启动服务：
+
+   ```bash
+   bash scripts/g2/deploy/serve_policy.sh
+   ```
+
+5. 另一个终端检查推理通信：
+
+   ```bash
+   bash scripts/g2/deploy/smoke_infer_client.sh
+   ```
+
+部署从 checkpoint 的 `assets/g2_train_config.yaml` 恢复训练语义；数据格式、动作表示和相机等详细约定见下表。
+
+当前训练配置使用schema v4：State/Action下的spatial与temporal同级，去掉encoding层。
+`action.target`选择控制量/来源；`spatial.mode / method`定义空间编码，`temporal`定义参考，Action额外选择chunk/step。
+State的EEF坐标与Action共用 `policy.pose`；State历史统一参考一个anchor。旧encoding写法继续兼容。
+微调策略为 `finetuning.vision: lora`、`language: lora`、`action_expert: full`。
+`run.smoke` 独立控制短跑，保持所选模型与冻结规则；`train_full.sh` 切到三个模块全部全参。
+其他预设及本预设的短跑方法见 [训练说明](docs/training.md#vlm-lora--动作专家全参)。
+
+## 使用文档
+
+| 要做什么 | 入口 |
+|---|---|
+| 准备数据、改训练参数、短跑、续训、选臂 | [训练说明](docs/training.md) |
+| 选择权重、启动服务、检查推理 | [部署说明](docs/deployment.md) |
+| 理解状态/动作表示、参考、坐标变换和时间采样 | [Policy 配置](docs/policy.md) |
+| 配置推理延迟补偿和轨迹衔接 | [RTC](docs/rtc.md) |
+| 找实现位置、理解 G2 与原生代码的依赖 | [适配架构](docs/architecture.md) |
+
+训练和部署 Shell 入口均支持 `--config PATH`。不传时分别使用 `configs/train.yaml`、`configs/deploy.yaml`。
+可将不同实验的 YAML 放在 `configs/` 下，通过启动参数选择：
 
 ```bash
-cd ~/openpi
-bash scripts/g2/bootstrap.sh                 # uv sync --extra g2
-bash scripts/g2/bootstrap.sh --download-base # + 拉 pi05_base
+bash scripts/g2/train/train_pipeline.sh --config scripts/g2/configs/train_right.yaml --dry-run
+bash scripts/g2/train/train_pipeline.sh --config scripts/g2/configs/train_right.yaml
+bash scripts/g2/train/compute_norm_stats.sh --config scripts/g2/configs/train_right.yaml
+
+bash scripts/g2/deploy/serve_policy.sh --config scripts/g2/configs/deploy_right.yaml
+bash scripts/g2/deploy/smoke_infer_client.sh --config scripts/g2/configs/deploy_right.yaml
 ```
 
-本仓库已移除 examples/、third_party/ 及 ALOHA / LIBERO 子模块；G2 安装不再初始化子模块。
+上面的 `train_right.yaml`、`deploy_right.yaml` 是自定义文件名示例，需自行创建。
+训练 YAML 支持只写覆盖字段，其余继承 `configs/train.yaml`；部署 YAML 需包含完整部署设置。
+Shell 入口也支持 Python 入口的临时覆盖，例如 `--batch-size 2`、`--port 8002`。
+所有相对配置路径均以仓库根目录为基准；其他目录下的 YAML 可传绝对路径。
+部署保留 `--deploy-config` 别名；smoke 客户端从同一份部署 YAML 读取地址和端口，`--host` / `--port` 可覆盖。
 
-## 数据
+配置原来位于 `train/config.yaml`、`deploy/config.yaml`，现在统一为 `configs/train.yaml`、`configs/deploy.yaml`。
+Shell 和 Python 启动脚本路径保持不变；显式传入 `--config` 或 `--deploy-config` 时使用新路径。
 
-数据集位置是 `train/config.yaml` 的 `data.root` + `data.repo_id`，不是写死的目录名。
+## 开发与运行手册
 
 ```bash
-# 采数机 / wholebody：launcher.lerobot.format: v2.1（或 both）
-rsync -avP .../recorded/vr/lerobot_v21/ \
-  ~/openpi/data/<data.repo_id>/
+.venv/bin/python -m pytest -q scripts/g2/tests src/openpi/adapters/g2/tests
 ```
 
-`HF_LEROBOT_HOME` 默认 = `~/openpi/data`（见 `_env.sh`）。
-需含 `meta/episodes_stats.jsonl`（OpenPI 的 LeRobot 0.1 对 v2.1 必需）。
-
-## 训练（`scripts/g2/train/`）
-
-日常训练参数统一放在 **[`train/config.yaml`](train/config.yaml)**。`train_pipeline.sh` 显式指定这份 YAML 并启动项目虚拟环境，
-不再透传命令行参数。v2 配置以 `policy.pose/state/action/timing` 描述策略，完整字段见
-[Policy 配置说明](POLICY_CONFIG.md)。配置包括实验名、数据集、选臂、相机、动作表示、模型预测长度、初始权重、
-学习率、batch、训练步数、checkpoint 和 W&B。
-
-```bash
-# 预览完整生效配置；无需数据集，不下载、不启动训练
-.venv/bin/python scripts/g2/train/train_pipeline.py --config scripts/g2/train/config.yaml --dry-run
-
-# 修改 train/config.yaml 后运行：norm → train
-bash scripts/g2/train/train_pipeline.sh
-
-# 独立实验 YAML 可以只写需要覆盖的字段；其余继承 train/config.yaml
-.venv/bin/python scripts/g2/train/train_pipeline.py --config scripts/g2/train/my_experiment.yaml
-
-# CLI 临时覆盖 YAML
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/g2/train/train_pipeline.py --batch-size 2 --exp-name test_run
-
-# 短跑：batch=1、20 步、关闭自动 W&B，自动生成独立实验名
-bash scripts/g2/train/train_smoke.sh
-
-# 从同一实验的最新 checkpoint 续训；总步数是目标值，不是追加值
-.venv/bin/python scripts/g2/train/train_pipeline.py --resume --num-train-steps 60000
-
-# 只计算统计量 / 强制重算统计量
-bash scripts/g2/train/compute_norm_stats.sh
-.venv/bin/python scripts/g2/train/train_pipeline.py --force-norm
-
-# 全参配置，多卡时需显式指定 FSDP 分片数
-# 先在 YAML 设置 training.fsdp_devices: 2
-CUDA_VISIBLE_DEVICES=0,1 bash scripts/g2/train/train_full.sh
-```
-
-四个 Shell 训练入口均不接收额外参数，固定读取 `train/config.yaml`；临时指定其他 YAML、预览或覆盖参数时，
-直接调用 `.venv/bin/python scripts/g2/train/train_pipeline.py`。
-Python 入口的覆盖顺序：`config.yaml` → 自定义 YAML → smoke 短跑默认值 → CLI。
-`CUDA_VISIBLE_DEVICES`、`XLA_PYTHON_CLIENT_MEM_FRACTION` 和 `ARM` 环境变量仍兼容；选臂 CLI 优先于 `ARM`。
-数据根目录由 YAML 的 `data.root` 决定；YAML 和 CLI 中的相对路径均相对于仓库根目录。
-新实验默认不覆盖已有目录；`checkpoints.overwrite: true` 会删除同名实验的全部权重。
-
-常用字段：
-
-| YAML 字段 | 含义 |
-|-----------|------|
-| `experiment.preset` | `low_mem` LoRA / `full_ft` 全参 / `smoke` 短跑 |
-| `experiment.arm` | `both` / `left` / `right` |
-| `data.root` + `data.repo_id` | 本地 LeRobot v2.1 数据集位置 |
-| `data.cameras` | `null` 自动选择头部和所选臂腕部；也可只要腕部。π₀.₅ 缺的相机槽位填黑图并 mask 掉 |
-| `policy.pose` | 模型位姿坐标系、TCP 标定和旋转表示；磁盘/通信保持 base_link / flange / rot6d |
-| `policy.state.space` | `eef` / `joint` / `both`，独立于动作表示和动作参考 |
-| `policy.action.representation` | `absolute` / `component_delta` / SE(3) body、spatial、hybrid delta；夹爪绝对 |
-| `policy.action.relative_to` / `delta_scope` | 指定参考和 chunk/step；absolute 均为 null |
-| `policy.timing.action_horizon` | 每个样本监督的动作帧数，默认 50；模型与握手共用这个名字 |
-| `policy.timing.execution_steps` | 只在旧快照里出现；提交长度在 wholebody `infer.execution_steps` |
-| `model.discrete_state_input` | 是否将当前状态编码进 prompt |
-| `training.decay_steps` | `null` 时跟随总训练步数；smoke 保留正常预热周期 |
-| `normalization.mode` | `auto` / `force` / `skip` |
-
-归一化与训练都从同一份解析结果构建 `TrainConfig`，因此动作表示、选臂、相机、预测长度、数据路径、
-batch 和 assets 路径一致。`auto` 仅在统计文件及其配置签名匹配时复用；旧统计文件没有签名时会重新计算。
-数据内容发生变化但路径不变时，用 `--force-norm` 重算。
-`--` 后只保留 optimizer / EMA 的高级覆盖，例如 `-- --optimizer.clip-gradient-norm=0.5`，
-结构和学习率参数请直接配置 YAML，避免隐藏的第二套覆盖。
-
-实验根目录和每份 checkpoint 的 `assets/` 都保存 `g2_train_config.yaml`，包含实际生效的配置。
-部署加载带此文件的新 checkpoint 时，会自动恢复训练时的模型、动作和相机设置，不受后来修改的 YAML 影响；
-v1 快照自动迁移，保留原来的状态输入。没有 YAML 快照的老 checkpoint 继续使用原来的具名 TrainConfig。
-续训允许修改总步数和学习率，但不允许改变数据/模型/Policy 输入输出语义。
-
-## 部署（`scripts/g2/deploy/`）
-
-`deploy/config.yaml` 选择 checkpoint 和进程设置，`serve_policy.sh` 调用专属 `scripts/g2/deploy/serve_policy.py`，通过 G2 适配层加载模型。
-原生 `scripts/serve_policy.py` 保持原生协议，不处理 G2 preset 或 G2 控制器。
-默认 **warmup**：监听前假图 infer 两次（付 JAX JIT）；`--no-warmup` 可关。
-`JAX_COMPILATION_CACHE_DIR` 在 `_env.sh` 里指到 `$OPENPI_DATA_HOME/jax_compile_cache`。
-
-```bash
-# ≠ G2_pi policy_server。deploy/config.yaml 默认 :8001，与 LeRobot :8000 分开
-CUDA_VISIBLE_DEVICES=0 bash scripts/g2/deploy/serve_policy.sh \
-  --policy.dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
-# 省略 --policy.dir 使用 deploy/config.yaml 的 checkpoint；训练语义和 arm 从快照恢复
-# healthz 在 warmup 结束后才 OK；日志应有 warmup step=0 infer_ms≈10s+，step=1 ≈100ms
-
-bash scripts/g2/deploy/smoke_infer_client.sh   # 端口对齐 deploy/config.yaml；首包应已是稳态
-```
-
-| 脚本 | 作用 |
-|------|------|
-| `deploy/serve_policy.sh` | 读取部署 YAML 后调用 G2 专属 server（默认 warmup） |
-| `deploy/smoke_infer_client.sh` | 假观测 round-trip |
-
-域控：`start_openpi_pi05_infer.sh`（`openpi_pi05_client`）。详见 [openpi-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)。
-
-## 与 G2_pi / LeRobot 边界
-
-- 环境 / cache / W&B（`G2_openpi`）分开；ckpt **不互通**
-- `serve_policy` ≠ `G2_pi` `policy_server`
-- 域控共用 `G2WebSocketPolicyClient` 与 policy runtime，模型差异留在 GPU 适配器
-## 单臂 π₀.₅
-
-使用 `ARM=both|left|right`，默认 `both`。右臂新实验：
-
-```bash
-ARM=right .venv/bin/python scripts/g2/train/train_pipeline.py --no-resume --exp-name right_arm_run
-```
-
-也可以使用 `--arm right`。训练包装器自动选择 `pi05_g2_vr_low_mem_right`（全参则为 `pi05_g2_vr_right`）；左臂对应 `_left`。独立配置名隔离 norm stats 和 checkpoint，切换选臂后需要重新计算统计量。原始双臂数据无需重新导出。
-
-单臂模型使用头部与对应腕部相机。默认每帧为 10 维 EEF 状态和 10 维 EEF 动作；也支持 joint、联合状态、历史输入、其他旋转表示及控制量。
-动作参考独立于模型状态，joint 状态也能使用 EEF delta。夹爪保持绝对值；动作补零到 32 维，
-联合/历史状态使用 Pi05 离散 token 表达。另一腕相机使用黑色占位和 false mask。完整组合见 [Policy 配置说明](POLICY_CONFIG.md)。
-
-部署时配置必须与训练一致：
-
-```bash
-bash scripts/g2/deploy/serve_policy.sh \
-  --policy.dir checkpoints/pi05_g2_vr_low_mem_right/right_arm_run/<step>
-```
-
-服务端根据本次双臂实测 EE 将单臂预测映射回 20 维绝对动作，RTC 前缀也只对所选臂进行归一化和引导。须同步更新 wholebody 执行端：它读取 `arm` metadata，仅采集头部与对应腕部相机，并不向未选中手臂和夹爪发送 policy 指令。部署脚本中已有的双臂 checkpoint 路径不能用于单臂配置，须显式指定本次实验路径。
-joint 状态模型在握手中声明 requires_joint_state，客户端需额外发送 16 维 joint_state；
-双臂实测 EE 仍用于单臂输出扩展，不会把关节状态当作位姿。
-
-## G2 通信协议
-
-G2 使用 `g2-policy-protocol==0.5.0` 中共享的 `g2.policy.v3`，保留 v2 pose20 兼容。控制量、观测、时间和 reset 都通过能力声明；详见 [Policy 配置说明](POLICY_CONFIG.md#部署协议)。
-协议是可选依赖：`uv sync --extra g2` 从相邻 `../g2-policy-protocol` 安装；原生安装无需此依赖。
-仅部署 wheel 时，将 `tool.uv.sources.g2-policy-protocol.path` 改为本地 wheel 文件路径，再 `uv lock` 和 `uv sync --extra g2`。
-G2 专属入口使用 `G2PolicyServer`；原生服务端不再按 robot metadata 分派或识别 G2。
-G2 server 在入口把标准观测映射成模型内部的 `observation/*`，JPEG 解码、RTC、单臂扩展和图像处理保持在适配层。
-默认 MessagePack，client 连接 `?encoding=json` 时整个会话使用 JSON text frames。
-域控/GPU 需同步更新并重启；本次不兼容旧 `openpi.websocket.v1` G2 客户端。GPU-local smoke 脚本已同步使用新协议。
-
-## 适配层边界
-
-G2 适配逻辑位于 `openpi.adapters.g2`，启动入口位于 `scripts/g2/`，依赖方向为 G2 → 原生 OpenPI：
-
-- `config.py`：YAML 解析、校验、旧 checkpoint 迁移与训练配置构建；预览时不加载模型依赖。
-- `presets.py`：G2 训练预设，独立于原生配置注册表。
-- `contract.py` / `data.py` / `transforms.py`：磁盘数据契约、数据配置接入、选臂和状态/动作变换。
-- `policy.py`：先恢复 G2 配置，再委托原生 loader 加载模型；包装推理结果，处理单臂输出扩展。
-- `server.py`：G2 协议、JPEG 解码与传输预热、metadata。
-- `scripts/g2/deploy/serve_policy.py`：启动参数、策略预热与服务启动。
-- `src/openpi/adapters/g2/tests/`：适配层回归测试与原生代码隔离检查。
-- `scripts/g2/tests/`：训练/部署入口回归测试，与 `train/`、`deploy/` 主入口分开。
-
-原生模型、loss、优化器和 DataLoader 不包含 G2 分支。DataLoader 只提供可选 dataset_factory 通用扩展接口；G2 采样逻辑在 data.py。
-原生配置注册表不注册 G2；Python 调用需使用 `openpi.adapters.g2.presets.get_config`。
-原生 policy loader 不读取 G2 YAML；G2 checkpoint 使用 `openpi.adapters.g2.policy.create_trained_policy`。
-G2 的 shell 启动命令不变，内部已切换至专属入口；旧的直接 `scripts/serve_policy.py ...pi05_g2...` 命令需更换入口。
-
-checkpoint 只保留通用的 `checkpoint_assets` 文本资源接口；原生保存逻辑不知道 G2 文件名或 YAML 内容。
-静态依赖检查和独立进程测试确保原生入口在禁止导入 G2 包时仍可导入。
+本路线与 `~/work/G2_pi/` 的 LeRobot v3 + PEFT 环境独立，数据格式和 checkpoint 不互通。
+跨采数机、GPU 和域控的完整操作见 [训练手册](../../../g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md)
+和 [部署手册](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)。

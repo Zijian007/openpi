@@ -25,20 +25,13 @@ export TRANSFORMERS_CACHE="${HF_HOME}/hub"
 mkdir -p "${HF_HOME}" "${HF_DATASETS_CACHE}" "${HF_HUB_CACHE}"
 unset HF_ENDPOINT || true
 
-g2_openpi_no_launcher_args() {
-  if [[ $# -ne 0 ]]; then
-    echo "ERROR: this launcher takes no arguments; edit scripts/g2/train/config.yaml." >&2
-    echo "For previews or CLI overrides, run .venv/bin/python scripts/g2/train/train_pipeline.py directly." >&2
-    exit 2
-  fi
-}
-
 g2_openpi_run_train() {
   cd "${G2_OPENPI_PROJECT_ROOT}"
   if [[ ! -x .venv/bin/python ]]; then
     echo "ERROR: missing ${G2_OPENPI_PROJECT_ROOT}/.venv — run bash scripts/g2/bootstrap.sh" >&2
     exit 1
   fi
+  # Explicit --config and other caller arguments take precedence over these defaults.
   exec .venv/bin/python scripts/g2/train/train_pipeline.py \
-    --config scripts/g2/train/config.yaml "$@"
+    --config scripts/g2/configs/train.yaml "$@"
 }

@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from typing import TYPE_CHECKING
 
 import flax.nnx as nnx
@@ -20,6 +21,9 @@ class Pi0Config(_model.BaseModelConfig):
     dtype: str = "bfloat16"
     paligemma_variant: _gemma.Variant = "gemma_2b"
     action_expert_variant: _gemma.Variant = "gemma_300m"
+    # Optional SigLIP Q/K/V/O LoRA. Disabled for existing model configurations.
+    vision_lora_rank: int = 0
+    vision_lora_alpha: float = 16.0
 
     # Set the model specific defaults.
     action_dim: int = 32
@@ -35,6 +39,14 @@ class Pi0Config(_model.BaseModelConfig):
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
+        if type(self.vision_lora_rank) is not int or self.vision_lora_rank < 0:
+            raise ValueError("vision_lora_rank must be a nonnegative integer")
+        if (
+            type(self.vision_lora_alpha) not in (int, float)
+            or not math.isfinite(self.vision_lora_alpha)
+            or self.vision_lora_alpha <= 0
+        ):
+            raise ValueError("vision_lora_alpha must be a positive finite number")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
@@ -112,6 +124,10 @@ class Pi0Config(_model.BaseModelConfig):
             filters.append(
                 nnx.Not(nnx_utils.PathRegex(".*lora.*")),
             )
-        if not filters:
-            return nnx.Nothing
-        return nnx.All(*filters)
+        freeze_filter = nnx.All(*filters) if filters else nnx.Nothing
+        if self.vision_lora_rank:
+            freeze_filter = nnx.Any(
+                freeze_filter,
+                nnx.All(nnx_utils.PathRegex("PaliGemma/img/.*"), nnx.Not(nnx_utils.PathRegex(".*lora.*"))),
+            )
+        return freeze_filter

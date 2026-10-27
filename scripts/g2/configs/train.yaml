@@ -1,0 +1,150 @@
+# 日常训练只改这份文件。相对路径均相对于 OpenPI 仓库根目录。
+# Shell 入口默认读取本文件；--config 可选择其他 YAML，CLI 参数可临时覆盖。
+# train_smoke.sh 使用 batch=1、steps=20，并自动生成独立实验名。
+schema_version: 4
+
+experiment:
+  name: Sing_TeaPi
+  arm: right                   # both | left | right
+
+# 三个模块分别设置 frozen / lora / full；full 不保留 LoRA 适配器。
+finetuning:
+  vision: lora              # frozen = 全部冻结；lora = Attention Q/K/V/O LoRA；full = 视觉全参
+  language: lora            # frozen | lora（Attention + FFN）| full
+  action_expert: full       # frozen | lora | full；lora/full 时动作投影和时间 MLP 也参与训练
+
+run:
+  smoke: false              # true = batch=1、20 步、独立实验名；保留上面的微调策略，CLI 可覆盖
+
+data:
+  root: ./data
+  repo_id: vr/Sing_TeaPi/lerobot_v21
+  # 本数据集为LeRobot v2.1、30 Hz；同一记录行包含实测state.*、指令action.*和图像。
+  # 同一行表示导出时的记录对齐，不等于各传感器采集、指令生成/下发的物理时间完全相同。
+  # state.pose / action.pose：双臂绝对位姿，各 20 维，顺序为 [左臂10维, 右臂10维]。
+  # 每臂10维 = xyz(3，米) + rot6d(6，旋转矩阵前两列) + gripper(1，闭合比例0开/1闭)。
+  # state.joint / action.joint：双臂关节角，各16维，顺序为 [左臂7关节+夹爪, 右臂7关节+夹爪]，关节单位rad。
+  # 磁盘位姿约定为 base_link 下的 flange；下面 policy.pose 可转换模型内部坐标和旋转表示。
+  # 数据虽有 head/torso 列，当前 action 只预测所选臂和夹爪；选臂不会改写原始双臂数据。
+  # null = 头部 + 所选臂腕部。也可只要腕部，例如 [hand_right_color]；缺的槽位用黑图。
+  cameras: null               # 单臂不能选另一只手的腕部
+
+policy:
+  pose:
+    # State和Action的EEF部分共用坐标约定；joint部分按关节排列/零点/单位解释，不做笛卡尔坐标转换。
+    parent_frame: base_link   # 以哪个坐标系表达末端位姿；其他坐标系必须提供base_to_parent
+    ee_frame: flange          # 描述哪个末端：法兰flange或标定后的TCP；其他末端需提供flange_to_tcp
+    rotation: rot6d           # rot6d | quaternion (xyzw) | axis_angle (rad)；空间运算后的旋转数值表示
+    base_to_parent: null      # 4x4: T_parent_base；observation = 每帧读取 reference.base_to_parent
+    flange_to_tcp: null       # {left: 4x4, right: 4x4}，T_flange_tcp，需真实标定
+
+  state:
+    space: eef               # eef = state.pose；joint = state.joint；both = 所选臂的EEF与Joint拼接
+    # EEF默认表示base_link下的flange位姿；坐标、末端和旋转表示均由上面的policy.pose指定。
+    spatial:
+      mode: absolute         # absolute | relative；默认保留当前绝对位姿
+      method: null           # relative时须指定component_difference | hybrid | se3_body | se3_spatial
+      # EEF的空间运算与action.spatial.method相同；joint仅支持分量差，both中几何方法仅作用于EEF。
+    temporal:
+      anchor: null           # absolute时为null；relative时指定下方参考之一
+      # current_measured | current_command | previous_command | episode_start | object。
+      # 对应当前state.pose、当前action.pose、前一采样action.pose、episode起点state.pose、reference.object_pose。
+      # 所有历史状态都相对同一个anchor；不使用Action专属的reference_scope，不逐历史帧累积。
+      # 例：history_steps=4、se3_body、current_measured，将每个历史位姿T_j编码为T_t^-1 @ T_j。
+      # 单帧相对current_measured会丢失绝对EEF位姿：位置为0，旋转为分量差0或相对旋转单位阵；夹爪仍绝对。
+      # joint/both的相对参考仅支持episode_start或object；object还须提供reference.object_joint。
+
+  action:
+    # LeRobot 每行只存一个时刻的动作；训练加载时才从多行采样、组装一个 action chunk。
+    # 流程：target选目标列 → timing采样H帧目标 → spatial/temporal编码 → 选臂、归一化并补到模型维度。
+    # 动作为“机械臂控制量 + 夹爪闭合比例”；下方相对编码只作用于机械臂，夹爪始终是目标绝对值。
+    target:
+      quantity: eef_pose     # eef_pose | joint_position | joint_velocity | eef_twist | joint_torque
+      source: command        # command = action.* 指令列；measured = state.* 实测列
+      # quantity与source一起决定标签列：
+      # eef_pose       → action.pose / state.pose（目标位置与朝向，不是磁盘中的delta）。
+      # joint_position → action.joint / state.joint（目标关节角）。
+      # joint_velocity / eef_twist / joint_torque → action.<同名后缀> / state.<同名后缀>。
+      # 速度列缺失可从对应轨迹差分；力矩必须真实记录，不能从位置推算。
+      # command学下发指令轨迹；measured学实测轨迹；都按timing选标签时刻，与参考来源独立。
+    spatial:
+      mode: relative         # absolute | relative；只改变模型标签的表达，不改写LeRobot数据
+      # absolute：直接预测target选出的控制量；method和temporal中的字段均为null（覆盖文件中可省略）。
+      # relative：spatial定义空间运算，temporal定义参考时刻与chunk内参考范围。
+      method: component_difference # component_difference | se3_body | se3_spatial | hybrid；relative时须指定
+      # 以下T/R均在policy.pose指定的模型坐标中；ref的选法由temporal.reference_scope决定。
+      # component_difference：[p_target-p_ref, rot_target-rot_ref]；当前rot6d是6个编码分量相减。
+      #                       不是欧拉角差或SE(3)变换；夹爪仍直接取target的闭合比例。
+      # se3_body：T_ref^-1 @ T_target，在参考末端坐标系表达。
+      # se3_spatial：T_target @ T_ref^-1，在父坐标系中左乘（平移不是简单位置差）。
+      # hybrid：父坐标系位置差 + 相对旋转 R_ref^T @ R_target。
+      # SE(3) 方法存相对变换的平移与 policy.pose.rotation 编码，不是 6 维李代数向量。
+      # joint_position 的相对编码仅支持 component_difference；速度、twist、力矩仅支持 absolute。
+    temporal:
+      anchor: current_measured # current_measured | current_command | previous_command | episode_start | object
+      # 令t为本次观测时刻；eef_pose的起始参考分别为：
+      # current_measured → state.pose[t]；current_command → action.pose[t]。
+      # previous_command → action.pose[t-1/sample_hz]（前一个采样时刻，不是前一预测目标）。
+      # episode_start → 本episode第一帧state.pose；object → t时刻reference.object_pose，需额外记录/提供。
+      # joint_position仅支持current_measured，读取state.joint[t]；参考与state.space独立。
+      reference_scope: chunk # chunk | step；两者都一次预测整个action chunk，不改变H
+      # 令A为anchor，Y_0...Y_(H-1)为target采样出的目标，D_i为编码结果（以下以分量差为例）：
+      # chunk：D_i = Y_i - A。整个chunk共用t时刻确定的参考，不逐帧减未来实测state。
+      # step：D_0 = Y_0 - A；D_i = Y_i - Y_(i-1)。后续参考前一目标，不是执行后重新读取实测值。
+      # 例：A的x=0.40m，目标x=[0.42,0.45,0.47]；chunk编码[0.02,0.05,0.07]，step编码[0.02,0.03,0.02]。
+      # step在推理解码时从A顺序累积还原；SE(3)方法用相应变换运算，夹爪始终绝对、不作差/累积。
+      # 每次推理按anchor规则取参考（episode_start仍为同一episode起点）；服务端返回解码后的绝对目标。
+      # 当前relative模式的客户端无需再次叠加delta。
+
+  timing:
+    # 时间单位统一为1/sample_hz秒；step不是training.num_train_steps中的优化器更新次数。
+    # 令H=action_horizon、o=target_offset_steps、s=stride_steps，第i帧目标时刻为t+(o+i*s)/sample_hz。
+    sample_hz: 30.0          # 采样时间网格；当前与LeRobot的fps=30一致。异频时低维量插值、图像取近邻
+    history_steps: 1         # 输入历史帧数L：t-(L-1)/sample_hz...t；状态拼接、图像横向拼图
+    # history只扩展观测，不改变chunk帧数；部署需提供完整历史。episode起点前的历史重复第一帧。
+    action_horizon: 50       # 每次训练样本/推理预测H帧；不表示一次要执行完50帧
+    target_offset_steps: 0   # 第一帧目标的偏移o；0包含t时刻，1从t+1/sample_hz开始
+    stride_steps: 1          # 相邻目标间隔s；动作间隔s/sample_hz秒，频率sample_hz/s
+    # 默认采样action.pose[t], action.pose[t+1/30], ... action.pose[t+49/30]，末目标在t+1.633秒。
+    # 默认右臂、rot6d的有效chunk为(50,10)，双臂为(50,20)；入模型时动作维度补到32。
+    # o=0时第一帧delta也可能非零：action.pose[t]是指令，state.pose[t]是实测，两者可有跟踪误差。
+    # 标签不跨episode；末尾不足H帧时重复该episode最后一帧目标。
+    # 部署执行多少帧后重规划，由wholebody的infer.execution_steps决定；不是修改这里的H。
+
+model:
+  discrete_state_input: true  # 将当前状态编码进 prompt
+  vision_lora_rank: 16        # 仅 finetuning.vision=lora 时使用，须为正整数；frozen/full 不创建适配器
+  vision_lora_alpha: 16.0
+  params_path: gs://openpi-assets/checkpoints/pi05_base/params
+
+training:
+  batch_size: 8              # 全局 batch，多卡时须可被可见 GPU 数量整除
+  num_workers: 4
+  num_train_steps: 50000     # 目标总步数；续训时不是额外步数
+  seed: 42
+  fsdp_devices: 1
+  log_interval: 50
+  save_interval: 5000
+  keep_period: 5000          # null = 仅保留最新 checkpoint
+  peak_lr: 2.5e-5
+  warmup_steps: 1000
+  decay_steps: null          # null = 跟随 num_train_steps
+  decay_lr: 2.5e-6
+
+checkpoints:
+  base_dir: ./checkpoints
+  assets_dir: ./assets
+  overwrite: false           # true 会删除同名实验的整个 checkpoint 目录
+  resume: false              # true 恢复最新 checkpoint；优先于 overwrite
+
+normalization:
+  mode: auto                 # auto | force | skip；修改动作表示/预测长度后应重算
+  max_frames: null           # null = 全量；仅影响统计量计算
+
+runtime:
+  gpu: "2"                   # 也可设 "0,1"；环境变量 CUDA_VISIBLE_DEVICES 优先
+  mem_fraction: 0.9           # 环境变量 XLA_PYTHON_CLIENT_MEM_FRACTION 优先
+
+wandb:
+  mode: auto                 # auto = 正常训练开启，smoke 关闭
+  project: G2_openpi

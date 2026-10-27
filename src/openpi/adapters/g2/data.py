@@ -13,6 +13,7 @@ from openpi import transforms as native_transforms
 from openpi.adapters.g2 import transforms as g2
 from openpi.adapters.g2.config import POLICY_DEFAULTS
 from openpi.adapters.g2.config import cameras_for_arm
+from openpi.adapters.g2.contract import CAMERA_OBSERVATION_KEYS
 from openpi.models import model as _model
 from openpi.training.config import DataConfig
 from openpi.training.config import DataConfigFactory
@@ -57,13 +58,8 @@ class RepackG2(native_transforms.DataTransformFn):
         ):
             if source in data:
                 result[f"observation/{dest}"] = np.asarray(data[source])
-        mapping = {
-            "head_color": "image",
-            "hand_left_color": "wrist_image_left",
-            "hand_right_color": "wrist_image_right",
-        }
         for camera in self.cameras:
-            result[f"observation/{mapping[camera]}"] = data[f"observation.images.{camera}"]
+            result[CAMERA_OBSERVATION_KEYS[camera]] = data[f"observation.images.{camera}"]
         if "prompt" in data:
             result["prompt"] = data["prompt"]
         elif "task" in data:

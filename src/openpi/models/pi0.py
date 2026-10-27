@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 from typing_extensions import override
 
+from openpi.models import lora
 from openpi.models import model as _model
 from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
@@ -86,6 +87,9 @@ class Pi0(_model.BaseModel):
                 pool_type="none",
                 scan=True,
                 dtype_mm=config.dtype,
+                lora_config=lora.LoRAConfig(rank=config.vision_lora_rank, alpha=config.vision_lora_alpha)
+                if config.vision_lora_rank
+                else None,
             )
         )
         img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)

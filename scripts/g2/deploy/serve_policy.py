@@ -50,6 +50,8 @@ def create_policy(args: Args):
 def _warmup_observation(policy) -> dict:
     """Synthetic observation using only fields the checkpoint contract declares."""
     import numpy as np
+
+    from openpi.adapters.g2.contract import CAMERA_OBSERVATION_KEYS
     from openpi.adapters.g2.server import connection_metadata
     from openpi.adapters.g2.transforms import make_g2_example
 
@@ -62,13 +64,8 @@ def _warmup_observation(policy) -> dict:
         return obs
     wire = connection_metadata(policy.metadata)
     spec = wire["observation_spec"]
-    native = {
-        "head_color": "observation/image",
-        "hand_left_color": "observation/wrist_image_left",
-        "hand_right_color": "observation/wrist_image_right",
-    }
     blank = np.zeros((224, 224, 3), np.uint8)
-    obs = {native[camera]: blank.copy() for camera in wire["required_cameras"]}
+    obs = {CAMERA_OBSERVATION_KEYS[camera]: blank.copy() for camera in wire["required_cameras"]}
     if spec["prompt"]:
         obs["prompt"] = "warmup"
     pose = np.zeros(20, np.float32)
@@ -93,7 +90,7 @@ def _warmup_observation(policy) -> dict:
             obs["observation/joint_history"] = np.stack([joint] * count)
         elif key == "image_history":
             for camera in wire["required_cameras"]:
-                obs[native[camera]] = np.stack([blank] * count)
+                obs[CAMERA_OBSERVATION_KEYS[camera]] = np.stack([blank] * count)
     return obs
 
 
@@ -160,15 +157,24 @@ def load_deploy_config(path: Path, *, apply_runtime: bool = False) -> Args:
     return Args(policy=Checkpoint(dir=checkpoint, config=raw["legacy_preset"]), **server)
 
 
-def cli() -> None:
+def cli(argv: list[str] | None = None) -> None:
     import tyro
 
+    from openpi.adapters.g2.config import DEFAULT_DEPLOY_CONFIG
+
     logging.basicConfig(level=logging.INFO, force=True)
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--deploy-config", type=Path, default=Path(__file__).with_name("config.yaml"))
-    known, remaining = parser.parse_known_args()
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--config", "--deploy-config", dest="deploy_config", type=Path, default=DEFAULT_DEPLOY_CONFIG)
+    known, remaining = parser.parse_known_args(argv)
     defaults = load_deploy_config(known.deploy_config, apply_runtime=True)
-    main(tyro.cli(Args, args=remaining, default=defaults))
+    main(
+        tyro.cli(
+            Args,
+            args=remaining,
+            default=defaults,
+            description="G2 policy server. Select deployment YAML with --config PATH (alias: --deploy-config).",
+        )
+    )
 
 
 if __name__ == "__main__":

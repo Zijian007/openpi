@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# YAML owns defaults; CLI flags override. CUDA is set in serve_policy.py before JAX loads.
+# --config PATH selects the deployment YAML; CLI flags override its settings.
+# CUDA is set in serve_policy.py before JAX loads.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 cd "${G2_OPENPI_PROJECT_ROOT}"

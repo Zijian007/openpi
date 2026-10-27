@@ -16,8 +16,10 @@ Follows the server handshake (g2.policy.v3 when the checkpoint has a training sn
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import logging
+from pathlib import Path
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +31,9 @@ import numpy as np
 import tyro
 from websockets.sync.client import connect
 
+from openpi.adapters.g2.config import DEFAULT_DEPLOY_CONFIG
+from openpi.adapters.g2.config import read_yaml
+from openpi.adapters.g2.contract import CAMERA_OBSERVATION_KEYS
 from openpi.adapters.g2.transforms import G2_ACTION_DIM
 from openpi.adapters.g2.transforms import make_g2_example
 
@@ -36,14 +41,13 @@ logger = logging.getLogger("g2.smoke_infer")
 
 # G2 TrainConfig: action_horizon=50; G2Outputs truncates padded 32 → 20.
 EXPECTED_HORIZON = 50
-EXPECTED_ACTION_DIM = G2_ACTION_DIM
 
 
 @dataclasses.dataclass
 class Args:
     host: str = "127.0.0.1"
     port: int = 8001
-    """Must match deploy/config.yaml server.port."""
+    """Defaults to the selected deployment YAML's server.port."""
     prompt: str = "Pick up the drink and put it in the box"
     num_infer: int = 3
     """How many infer round-trips. With serve_policy.sh warmup, all should be steady (~100ms)."""
@@ -56,7 +60,7 @@ class Args:
 def _make_obs(args: Args) -> dict:
     if args.zeros:
         return {
-            "observation/state": np.zeros(EXPECTED_ACTION_DIM, dtype=np.float32),
+            "observation/state": np.zeros(G2_ACTION_DIM, dtype=np.float32),
             "observation/image": np.zeros((224, 224, 3), dtype=np.uint8),
             "observation/wrist_image_left": np.zeros((224, 224, 3), dtype=np.uint8),
             "observation/wrist_image_right": np.zeros((224, 224, 3), dtype=np.uint8),
@@ -67,9 +71,13 @@ def _make_obs(args: Args) -> dict:
     return obs
 
 
+def _address(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+
+
 def _wait_healthz(host: str, port: int, timeout_s: float) -> None:
     """serve_policy exposes HTTP GET /healthz on the same port (after warmup)."""
-    url = f"http://{host}:{port}/healthz"
+    url = f"http://{_address(host, port)}/healthz"
     deadline = time.monotonic() + timeout_s
     last_err: BaseException | None = None
     while time.monotonic() < deadline:
@@ -111,24 +119,19 @@ def main(args: Args) -> int:
         force=True,
     )
     # Always print a one-liner so success is visible even if logging is muted.
-    print(f"smoke_infer: ws://{args.host}:{args.port}  num_infer={args.num_infer}", flush=True)
-    logger.info("waiting for serve_policy at ws://%s:%s ...", args.host, args.port)
+    url = f"ws://{_address(args.host, args.port)}"
+    print(f"smoke_infer: {url}  num_infer={args.num_infer}", flush=True)
+    logger.info("waiting for serve_policy at %s ...", url)
     _wait_healthz(args.host, args.port, args.connect_timeout_s)
 
-    with connect(f"ws://{args.host}:{args.port}", compression=None, max_size=None) as client:
+    with connect(url, compression=None, max_size=None) as client:
         meta = codec.loads(client.recv(), encoding="msgpack")
         protocol.validate_metadata(meta)
         logger.info("server metadata: %s", meta)
         for i in range(args.num_infer):
             native = _make_obs(args)
-            mapping = dict(
-                zip(
-                    protocol.CAMERA_IDS,
-                    ("observation/image", "observation/wrist_image_left", "observation/wrist_image_right"),
-                    strict=True,
-                )
-            )
-            images = {key: native[mapping[key]] for key in meta["required_cameras"]}
+            raw_images = {key: native[CAMERA_OBSERVATION_KEYS[key]] for key in meta["required_cameras"]}
+            images = raw_images
             if meta["image_encoding"] == "jpeg":
                 import cv2
 
@@ -138,13 +141,23 @@ def main(args: Args) -> int:
                 }
             context = None
             if protocol.is_v3(meta):
-                context = synthetic_context(dict(state=native["observation/state"],
-                                                  joint_state=np.zeros(16, np.float32),
-                                                  images={key: native[mapping[key]] for key in meta["required_cameras"]}), meta)
+                context = synthetic_context(
+                    {
+                        "state": native["observation/state"],
+                        "joint_state": np.zeros(16, np.float32),
+                        "images": raw_images,
+                    },
+                    meta,
+                )
             request = protocol.build_request(
-                request_id=i, prompt=args.prompt, state=native["observation/state"], images=images,
-                metadata=meta, joint_state=np.zeros(16, np.float32) if meta["requires_joint_state"] else None,
-                observation_time_ns=time.monotonic_ns() if protocol.is_v3(meta) else None, context=context,
+                request_id=i,
+                prompt=args.prompt,
+                state=native["observation/state"],
+                images=images,
+                metadata=meta,
+                joint_state=np.zeros(16, np.float32) if meta["requires_joint_state"] else None,
+                observation_time_ns=time.monotonic_ns() if protocol.is_v3(meta) else None,
+                context=context,
             )
             t0 = time.monotonic()
             client.send(codec.dumps(request))
@@ -169,9 +182,31 @@ def main(args: Args) -> int:
     return 0
 
 
+def cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--config", "--deploy-config", dest="deploy_config", type=Path, default=DEFAULT_DEPLOY_CONFIG)
+    known, remaining = parser.parse_known_args(argv)
+    server = read_yaml(known.deploy_config)["server"]
+    host, port = server["host"], server["port"]
+    if not isinstance(host, str) or not host.strip():
+        raise ValueError("server.host must be a nonempty string")
+    if type(port) is not int or not 0 < port < 65536:
+        raise ValueError("server.port must be an integer in [1, 65535]")
+    # A server bind address is not necessarily a suitable local client destination.
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    return main(
+        tyro.cli(
+            Args,
+            args=remaining,
+            default=Args(host=host, port=port),
+            description="G2 smoke client. Select deployment YAML with --config PATH (alias: --deploy-config).",
+        )
+    )
+
+
 if __name__ == "__main__":
     try:
-        raise SystemExit(main(tyro.cli(Args)))
+        raise SystemExit(cli())
     except (AssertionError, ConnectionError, RuntimeError) as exc:
         logger.error("%s", exc)
         raise SystemExit(1) from exc

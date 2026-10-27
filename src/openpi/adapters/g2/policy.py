@@ -52,22 +52,19 @@ class G2Policy(base_policy.BasePolicy):
         result["actions"] = ActionCodec(self._settings, self.metadata.get("arm", "both")).decode(
             result["actions"], context
         )
-        self._history.append(
-            {
-                key: np.asarray(obs.get(key, value))[-1].copy()
-                if np.asarray(obs.get(key, value)).ndim == 4
-                else np.asarray(obs.get(key, value)).copy()
-                for key, value in context.items()
-                if key
-                in (
-                    "observation/pose",
-                    "observation/joint",
-                    "observation/image",
-                    "observation/wrist_image_left",
-                    "observation/wrist_image_right",
-                )
-            }
-        )
+        if self._history.maxlen > 1:
+            frame = {}
+            for key in (
+                "observation/pose",
+                "observation/joint",
+                "observation/image",
+                "observation/wrist_image_left",
+                "observation/wrist_image_right",
+            ):
+                if key in context:
+                    value = np.asarray(obs.get(key, context[key]))
+                    frame[key] = (value[-1] if value.ndim == 4 else value).copy()
+            self._history.append(frame)
         if self._start is None:
             self._start = {
                 key: np.asarray(value).copy()

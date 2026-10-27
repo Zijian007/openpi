@@ -3,6 +3,7 @@ import re
 
 import flax.linen as nn
 import flax.struct as struct
+import jax
 import jax.numpy as jnp
 
 import openpi.shared.array_typing as at
@@ -28,6 +29,36 @@ class LoRAConfig:
     @property
     def scaling_value(self) -> float:
         return self.alpha / math.sqrt(self.rank) if self.rslora else self.alpha / self.rank
+
+
+class DotGeneral(nn.Module):
+    """LoRA for DenseGeneral's dot hook, preserving its existing kernel and bias paths.
+
+    Supports projection kernels with leading contracting axes and no batch axes,
+    including attention Q/K/V (D -> H,d) and output (H,d -> D) projections.
+    """
+
+    config: LoRAConfig
+
+    @nn.compact
+    def __call__(self, inputs, kernel, dimension_numbers, *, precision=None):
+        (input_axes, kernel_axes), (input_batch, kernel_batch) = dimension_numbers
+        if input_batch or kernel_batch or tuple(kernel_axes) != tuple(range(len(kernel_axes))):
+            raise ValueError("LoRA DotGeneral requires leading kernel contraction axes and no batch axes")
+        if self.config.rank <= 0:
+            raise ValueError("LoRA rank must be positive")
+        split = len(kernel_axes)
+        a = self.param("lora_a", self.config.init_fn, (*kernel.shape[:split], self.config.rank))
+        # Zero delta at initialization while allowing gradients through B immediately.
+        b = self.param("lora_b", nn.initializers.zeros, (self.config.rank, *kernel.shape[split:]))
+        hidden = jax.lax.dot_general(
+            inputs, a.astype(inputs.dtype), ((input_axes, kernel_axes), ((), ())), precision=precision
+        )
+        delta = jax.lax.dot_general(
+            hidden, b.astype(inputs.dtype), (((hidden.ndim - 1,), (0,)), ((), ())), precision=precision
+        )
+        base = jax.lax.dot_general(inputs, kernel, dimension_numbers, precision=precision)
+        return base + delta * jnp.asarray(self.config.scaling_value, dtype=base.dtype)
 
 
 class Einsum(nn.Module):

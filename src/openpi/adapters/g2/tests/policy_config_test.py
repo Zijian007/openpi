@@ -26,7 +26,7 @@ def test_legacy_checkpoint_migration_is_self_contained(mode, space):
     assert config.data.resolved_state_space == space
     assert config.data.use_delta_actions == (mode == "relative")
     assert config.model.action_horizon == 50
-    assert yaml.safe_load(config.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])["settings"]["schema_version"] == 2
+    assert yaml.safe_load(config.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])["settings"]["schema_version"] == 4
     assert legacy == original
 
 
@@ -172,8 +172,6 @@ def test_state_action_encoding_round_trip(tmp_path, monkeypatch, arm, space, rep
     np.testing.assert_array_equal(actions, original)
 
 
-
-
 def test_derived_preview_is_consistent_with_prediction_and_state_choice():
     settings = g2_config.resolve_settings(
         g2_config.load_settings(),
@@ -198,7 +196,7 @@ def test_schema_version_is_not_a_boolean():
         g2_config.build_train_config(settings)
 
 
-def test_checkpoint_yaml_contains_resolved_v2_only(tmp_path):
+def test_checkpoint_yaml_contains_public_v4_with_equivalent_policy(tmp_path):
     path = tmp_path / "legacy.yaml"
     path.write_text(yaml.safe_dump(legacy_settings()))
     settings = g2_config.resolve_settings(g2_config.load_settings(path), {})
@@ -206,4 +204,6 @@ def test_checkpoint_yaml_contains_resolved_v2_only(tmp_path):
     snapshot = yaml.safe_load(yaml.safe_dump(yaml.safe_load(config.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])))
     assert "action_mode" not in snapshot["settings"]["data"]
     assert "action_horizon" not in snapshot["settings"]["model"]
-    assert snapshot["settings"]["policy"] == settings["policy"]
+    assert snapshot["settings"]["schema_version"] == 4
+    assert "space" not in snapshot["settings"]["policy"]["action"]
+    assert g2_config.upgrade_settings(snapshot["settings"])["policy"] == settings["policy"]

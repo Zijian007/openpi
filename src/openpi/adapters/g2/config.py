@@ -11,18 +11,29 @@ import math
 from pathlib import Path
 import re
 from typing import Any
+import warnings
 
 from g2_policy_protocol import protocol
 from g2_policy_tools.validation import validate_rigid_transform as _validate_rigid_transform
 import yaml
 
+from openpi.adapters.g2 import settings_schema
+
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_CONFIG = PROJECT_ROOT / "scripts/g2/train/config.yaml"
+CONFIG_DIR = PROJECT_ROOT / "scripts/g2/configs"
+DEFAULT_CONFIG = CONFIG_DIR / "train.yaml"
+DEFAULT_DEPLOY_CONFIG = CONFIG_DIR / "deploy.yaml"
 CHECKPOINT_CONFIG = "g2_train_config.yaml"
+PRESET_CONFIG_NAMES = {
+    "low_mem": "pi05_g2_vr_low_mem",
+    "vlm_lora_action_full": "pi05_g2_vr_vlm_lora_action_full",
+    "full_ft": "pi05_g2_vr",
+    "smoke": "pi05_g2_vr_low_mem",
+}
 
 # A single list maps compatibility CLI arguments to the YAML fields they override.
 CLI_FIELDS = {
-    "preset": ("experiment", "preset"),
+    "smoke": ("run", "smoke"),
     "exp_name": ("experiment", "name"),
     "arm": ("experiment", "arm"),
     "repo_id": ("data", "repo_id"),
@@ -89,9 +100,11 @@ POLICY_DEFAULTS = {
 SCHEMA = {
     "schema_version": None,
     "experiment": {"name", "preset", "arm"},
+    "finetuning": {"vision", "language", "action_expert"},
+    "run": {"smoke"},
     "data": {"root", "repo_id", "cameras"},
     "policy": {key: set(fields) for key, fields in POLICY_DEFAULTS.items()},
-    "model": {"discrete_state_input", "params_path"},
+    "model": {"discrete_state_input", "params_path", "vision_lora_rank", "vision_lora_alpha"},
     "training": {
         "batch_size",
         "num_workers",
@@ -163,20 +176,22 @@ def _migrate_timing_horizon(timing: dict[str, Any]) -> None:
     timing["action_horizon"] = renamed
 
 
-def upgrade_settings(settings: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
-    """Translate v1 fields without reading a template; preserve old state semantics."""
-    result = copy.deepcopy(settings)
+def _upgrade_legacy_settings(settings: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
+    """Migrate the owned, version-checked copy returned by compile_input."""
+    result = settings
     runtime = result.get("runtime")
     if isinstance(runtime, dict):
         runtime.pop("use_proxy", None)
         runtime.pop("proxy", None)
     version = result.get("schema_version", 1)
-    if type(version) is not int or version not in (1, 2):
-        raise ValueError("schema_version must be 1 or 2")
     data = result.get("data", {})
     model = result.get("model", {})
     if not isinstance(data, dict) or not isinstance(model, dict):
         raise ValueError("data and model must be YAML mappings")
+    if not partial:
+        # Old checkpoints must keep the original vision architecture even if today's YAML enables LoRA.
+        model.setdefault("vision_lora_rank", 0)
+        model.setdefault("vision_lora_alpha", 16.0)
     legacy = {"action_space", "action_mode", "state_space"}.intersection(data) or "action_horizon" in model
     if legacy and (version == 2 or "policy" in result):
         raise ValueError(
@@ -222,6 +237,16 @@ def upgrade_settings(settings: dict[str, Any], *, partial: bool = False) -> dict
     return result
 
 
+def upgrade_settings(settings: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
+    """Compile public v4 and migrate older YAML/snapshots to the stable internal contract."""
+    result = _upgrade_legacy_settings(settings_schema.compile_input(settings), partial=partial)
+    return settings_schema.add_training_sections(result, partial=partial)
+
+
+def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    return settings_schema.public_settings(upgrade_settings(settings))
+
+
 def _merge_settings(base: dict, overrides: dict, path: str = "") -> None:
     for key, value in overrides.items():
         name = f"{path}.{key}" if path else key
@@ -243,23 +268,41 @@ def load_settings(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
         policy = overrides.get("policy", {})
         if not isinstance(policy, dict):
             raise ValueError("policy must be a YAML mapping")
-        action = policy.get("action", {})
-        if not isinstance(action, dict):
-            raise ValueError("policy.action must be a YAML mapping")
-        if action.get("representation") == "absolute":
-            action.setdefault("relative_to", None)
-            action.setdefault("delta_scope", None)
+        for group in ("state", "action"):
+            spec = policy.get(group, {})
+            if not isinstance(spec, dict):
+                raise ValueError(f"policy.{group} must be a YAML mapping")
+            if spec.get("representation") == "absolute":
+                spec.setdefault("relative_to", None)
+                if group == "action":
+                    spec.setdefault("delta_scope", None)
         _merge_settings(settings, overrides)
     return settings
 
 
 def resolve_settings(settings: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     result = upgrade_settings(settings)
-    preset = overrides.get("preset", result["experiment"]["preset"])
+    overrides = dict(overrides)
+    preset = overrides.pop("preset", None)
     if preset == "smoke":
+        overrides.setdefault("smoke", True)
+    elif preset is not None:
+        # Old CLI selectors remain available; full_ft now really trains all modules.
+        result["finetuning"] = settings_schema.legacy_finetuning(
+            preset, 0 if preset == "full_ft" else result["model"]["vision_lora_rank"]
+        )
+    for module in ("vision", "language", "action_expert"):
+        if f"{module}_mode" in overrides:
+            result["finetuning"][module] = overrides.pop(f"{module}_mode")
+    result["experiment"]["preset"] = settings_schema.preset_for_modes(result["finetuning"])
+    if overrides.get("smoke", result["run"]["smoke"]):
+        if result["training"]["decay_steps"] is None:
+            # Keep the selected experiment's LR schedule while shortening its run.
+            result["training"]["decay_steps"] = max(
+                result["training"]["num_train_steps"], result["training"]["warmup_steps"] + 1
+            )
         result["training"].update(batch_size=1, num_train_steps=20)
         result["experiment"]["name"] = ""  # keep smoke checkpoints out of the regular experiment
-    overrides = dict(overrides)
     if "action_representation" in overrides:
         action = result["policy"]["action"]
         absolute = overrides["action_representation"] == "absolute"
@@ -273,9 +316,52 @@ def resolve_settings(settings: dict[str, Any], overrides: dict[str, Any]) -> dic
             for parent in parents:
                 target = target[parent]
             target[field] = value
+    action_override = {}
+    for key in ("quantity", "source"):
+        if f"action_{key}" in overrides:
+            action_override.setdefault("target", {})[key] = overrides[f"action_{key}"]
+    # Preserve old programmatic/CLI selectors while using one public taxonomy.
+    if "action_method" in overrides:
+        overrides.setdefault("action_spatial", overrides["action_method"])
+    if "action_strategy" in overrides:
+        strategy = overrides["action_strategy"]
+        scope = settings_schema.REFERENCE_STRATEGIES.get(strategy, strategy) if isinstance(strategy, str) else strategy
+        overrides.setdefault("action_reference_scope", scope)
+    for cli_key, key in (("action_mode", "mode"), ("action_spatial", "method")):
+        if cli_key in overrides:
+            action_override.setdefault("spatial", {})[key] = overrides[cli_key]
+    for key in ("anchor", "reference_scope"):
+        if f"action_{key}" in overrides:
+            action_override.setdefault("temporal", {})[key] = overrides[f"action_{key}"]
+    if action_override:
+        compiled = settings_schema.compile_input({"policy": {"action": action_override}})
+        result["policy"]["action"].update(compiled["policy"]["action"])
+    state_override = {}
+    for cli_key, key in (("state_mode", "mode"), ("state_spatial", "method")):
+        if cli_key in overrides:
+            state_override.setdefault("spatial", {})[key] = overrides[cli_key]
+    if "state_anchor" in overrides:
+        state_override["temporal"] = {"anchor": overrides["state_anchor"]}
+    if state_override:
+        compiled = settings_schema.compile_input({"policy": {"state": state_override}})
+        result["policy"]["state"].update(compiled["policy"]["state"])
     if result["checkpoints"]["resume"]:
         result["checkpoints"]["overwrite"] = False
     validate_settings(result)
+    state = result["policy"]["state"]
+    if (
+        state["space"] == "eef"
+        and state["representation"] != "absolute"
+        and state["relative_to"] == "current_measured_pose"
+        and result["policy"]["timing"]["history_steps"] == 1
+    ):
+        warnings.warn(
+            "state.temporal.anchor=current_measured with history_steps=1 zeros the EEF position input; "
+            "rotation becomes zero component differences or identity relative rotation, and gripper stays absolute. "
+            "Use absolute state or another reference to retain absolute EEF pose information.",
+            UserWarning,
+            stacklevel=2,
+        )
     return result
 
 
@@ -301,7 +387,11 @@ def selected_cameras(settings: dict[str, Any]) -> tuple[str, ...]:
 
 def preset_name(settings: dict[str, Any]) -> str:
     preset = settings["experiment"]["preset"]
-    name = "pi05_g2_vr" if preset == "full_ft" else "pi05_g2_vr_low_mem"
+    if preset == "custom":
+        modes = settings["finetuning"]
+        name = f"pi05_g2_vr_v{modes['vision']}_l{modes['language']}_a{modes['action_expert']}"
+    else:
+        name = PRESET_CONFIG_NAMES[preset]
     arm = settings["experiment"]["arm"]
     return name if arm == "both" else f"{name}_{arm}"
 
@@ -321,13 +411,17 @@ def _validate_policy(policy: dict[str, Any]) -> None:
 
     def choice(group, key, choices):
         if policy[group][key] not in choices:
-            raise ValueError(f"policy.{group}.{key} must be one of {choices}")
+            path = f"policy.{group}.{key}"
+            if key == "representation":
+                path = f"policy.{group}.spatial.method"
+                choices = ("absolute (mode)", *settings_schema.ACTION_METHODS)
+            raise ValueError(f"{path} must be one of {choices}")
 
     for key in ("parent_frame", "ee_frame", "rotation"):
         if not isinstance(pose[key], str) or not pose[key].strip():
             raise ValueError(f"policy.pose.{key} must be a nonempty string")
     choice("state", "space", ("joint", "eef", "both"))
-    choice("state", "representation", ("absolute", "relative"))
+    choice("state", "representation", ("absolute", *settings_schema.STATE_METHODS.values()))
     choice("action", "space", ("joint", "eef"))
     choice(
         "action", "control_quantity", ("pose_target", "joint_position", "joint_velocity", "eef_twist", "joint_torque")
@@ -341,16 +435,20 @@ def _validate_policy(policy: dict[str, Any]) -> None:
     for group in ("state", "action"):
         relative_to = policy[group]["relative_to"]
         if relative_to is not None and (not isinstance(relative_to, str) or not relative_to.strip()):
-            raise ValueError(f"policy.{group}.relative_to must be null or a nonempty string")
+            raise ValueError(f"policy.{group}.temporal.anchor must be null or a nonempty string")
     if state["representation"] == "absolute" and state["relative_to"] is not None:
-        raise ValueError("policy.state.relative_to must be null for absolute state")
-    if state["representation"] == "relative" and state["relative_to"] is None:
-        raise ValueError("policy.state.relative_to must specify a reference for relative state")
+        raise ValueError("policy.state.temporal.anchor must be null for absolute state")
+    if state["representation"] != "absolute" and state["relative_to"] is None:
+        raise ValueError("Relative state requires policy.state.temporal.anchor")
+    if state["space"] == "joint" and state["representation"] not in ("absolute", "relative"):
+        raise ValueError(
+            "Joint state supports absolute mode or relative mode with spatial.method: component_difference"
+        )
     if action["representation"] == "absolute":
         if action["relative_to"] is not None or action["delta_scope"] is not None:
-            raise ValueError("policy.action.relative_to and delta_scope must be null for absolute actions")
+            raise ValueError("policy.action.temporal.anchor and reference_scope must be null for absolute actions")
     elif action["relative_to"] is None or action["delta_scope"] not in ("chunk", "step"):
-        raise ValueError("Delta actions must specify relative_to and delta_scope: chunk or step")
+        raise ValueError("Relative actions require temporal.anchor and reference_scope: chunk or step")
     for key in ("history_steps", "action_horizon", "execution_steps", "target_offset_steps", "stride_steps"):
         value = timing[key]
         if key == "execution_steps" and value is None:
@@ -371,30 +469,32 @@ def _validate_policy(policy: dict[str, Any]) -> None:
         "episode_start_pose",
         "object_pose",
     )
-    if state["representation"] == "relative" and state["relative_to"] not in references:
-        raise ValueError(f"policy.state.relative_to must be one of {references}")
+    if state["representation"] != "absolute" and state["relative_to"] not in references:
+        raise ValueError(f"policy.state.temporal.anchor must be one of {tuple(settings_schema.REFERENCES)}")
     if (
-        state["representation"] == "relative"
+        state["representation"] != "absolute"
         and state["space"] in ("joint", "both")
         and state["relative_to"] not in ("episode_start_pose", "object_pose")
     ):
-        raise ValueError("Relative joint state must use episode_start_pose or object_pose (with object_joint)")
+        raise ValueError("Relative joint state must use episode_start or object (with object_joint)")
     if action["representation"] != "absolute" and action["relative_to"] not in references:
-        raise ValueError(f"policy.action.relative_to must be one of {references}")
+        raise ValueError(f"policy.action.temporal.anchor must be one of {tuple(settings_schema.REFERENCES)}")
     quantity = action["control_quantity"]
     expected_space = "eef" if quantity in ("pose_target", "eef_twist") else "joint"
     if action["space"] != expected_space:
         raise ValueError(f"{quantity} requires action.space: {expected_space}")
     if quantity in ("joint_velocity", "eef_twist", "joint_torque") and action["representation"] != "absolute":
-        raise ValueError("Velocity/twist/torque control values must use absolute representation")
+        raise ValueError("Velocity/twist/torque control values must use spatial.mode: absolute")
     if quantity == "joint_position" and action["representation"] not in ("absolute", "component_delta"):
-        raise ValueError("Joint positions support absolute or component_delta representation")
+        raise ValueError(
+            "Joint positions support absolute mode or relative mode with spatial.method: component_difference"
+        )
     if (
         quantity == "joint_position"
         and action["representation"] == "component_delta"
         and action["relative_to"] != "current_measured_pose"
     ):
-        raise ValueError("Joint deltas use current measured joints (current_measured_pose reference)")
+        raise ValueError("Joint deltas use current measured joints (temporal.anchor: current_measured)")
     matrices = [("base_to_parent", pose["base_to_parent"])]
     if isinstance(pose["flange_to_tcp"], dict) and set(pose["flange_to_tcp"]) == {"left", "right"}:
         matrices.extend((f"flange_to_tcp.{side}", pose["flange_to_tcp"][side]) for side in ("left", "right"))
@@ -430,10 +530,23 @@ def validate_settings(settings: dict[str, Any]) -> None:
         if value not in choices:
             raise ValueError(f"{section}.{key} must be one of {choices}, got {value!r}")
 
-    choice("experiment", "preset", ("low_mem", "full_ft", "smoke"))
+    choice("experiment", "preset", (*PRESET_CONFIG_NAMES, "custom"))
+    for module in ("vision", "language", "action_expert"):
+        choice("finetuning", module, settings_schema.FINETUNING_MODES)
+    if all(mode == "frozen" for mode in settings["finetuning"].values()):
+        raise ValueError("At least one finetuning module must be trainable")
+    if type(settings["run"]["smoke"]) is not bool:
+        raise ValueError("run.smoke must be a YAML boolean")
     choice("experiment", "arm", ("both", "left", "right"))
     choice("normalization", "mode", ("auto", "force", "skip"))
     choice("wandb", "mode", ("auto", "on", "off"))
+    rank, alpha = settings["model"]["vision_lora_rank"], settings["model"]["vision_lora_alpha"]
+    if type(rank) is not int or rank < 0:
+        raise ValueError("model.vision_lora_rank must be a nonnegative integer")
+    if settings["finetuning"]["vision"] == "lora" and rank == 0:
+        raise ValueError("finetuning.vision=lora requires a positive model.vision_lora_rank")
+    if type(alpha) not in (int, float) or not math.isfinite(alpha) or alpha <= 0:
+        raise ValueError("model.vision_lora_alpha must be a positive finite number")
     for section, key in (
         ("checkpoints", "overwrite"),
         ("checkpoints", "resume"),
@@ -489,14 +602,14 @@ def validate_settings(settings: dict[str, Any]) -> None:
     if repo.is_absolute() or ".." in repo.parts:
         raise ValueError("data.repo_id must be relative to data.root without '..'")
     cameras = settings["data"]["cameras"]
-    if cameras is not None and (
-        not isinstance(cameras, list) or any(not isinstance(item, str) for item in cameras)
-    ):
+    if cameras is not None and (not isinstance(cameras, list) or any(not isinstance(item, str) for item in cameras)):
         raise ValueError("data.cameras must be null or a list of camera names")
     selected_cameras(settings)
     decay_steps = settings["training"]["decay_steps"] or settings["training"]["num_train_steps"]
     # Smoke deliberately runs only a few updates of the normal schedule.
-    if settings["experiment"]["preset"] != "smoke" and decay_steps <= settings["training"]["warmup_steps"]:
+    if (not settings["run"]["smoke"] or settings["training"]["decay_steps"] is not None) and decay_steps <= settings[
+        "training"
+    ]["warmup_steps"]:
         raise ValueError("training.decay_steps (or num_train_steps) must exceed warmup_steps")
 
 
@@ -504,18 +617,27 @@ def build_train_config(settings: dict[str, Any], extra_args: tuple[str, ...] = (
     """Build exactly the same TrainConfig for both stages and for inference."""
     settings = upgrade_settings(settings)
     validate_settings(settings)
+    validate_extra_args(extra_args)
 
     from openpi.adapters.g2 import presets
     from openpi.training import optimizer
     from openpi.training import weight_loaders
 
-    base = presets.get_config(preset_name(settings))
+    name = preset_name(settings)
+    arm = settings["experiment"]["arm"]
+    # Native model variants and masks come only from the explicit module modes.
+    base = presets.get_config("pi05_g2_vr" + (f"_{arm}" if arm != "both" else ""))
     train = settings["training"]
     policy = settings["policy"]
+    modes = settings["finetuning"]
     model = dataclasses.replace(
         base.model,
+        paligemma_variant="gemma_2b_lora" if modes["language"] == "lora" else "gemma_2b",
+        action_expert_variant="gemma_300m_lora" if modes["action_expert"] == "lora" else "gemma_300m",
         action_horizon=policy["timing"]["action_horizon"],
         discrete_state_input=settings["model"]["discrete_state_input"],
+        vision_lora_rank=settings["model"]["vision_lora_rank"] if modes["vision"] == "lora" else 0,
+        vision_lora_alpha=settings["model"]["vision_lora_alpha"],
         max_token_len=max(base.model.max_token_len, 6 * state_dimension(settings) + 96)
         if state_dimension(settings) > 32
         else base.model.max_token_len,
@@ -530,9 +652,7 @@ def build_train_config(settings: dict[str, Any], extra_args: tuple[str, ...] = (
     )
     # Preserve the normal warmup/decay schedule in a 20-step smoke run.
     decay_steps = train["decay_steps"] or (
-        max(30_000, train["warmup_steps"] + 1)
-        if settings["experiment"]["preset"] == "smoke"
-        else train["num_train_steps"]
+        max(30_000, train["warmup_steps"] + 1) if settings["run"]["smoke"] else train["num_train_steps"]
     )
     metadata = {
         **base.policy_metadata,
@@ -542,7 +662,10 @@ def build_train_config(settings: dict[str, Any], extra_args: tuple[str, ...] = (
     }
     config = dataclasses.replace(
         base,
+        name=name,
         model=model,
+        freeze_filter=presets.finetuning_filter(model, modes),
+        ema_decay=None if "lora" in (modes["language"], modes["action_expert"]) else base.ema_decay,
         data=data,
         exp_name=settings["experiment"]["name"],
         weight_loader=weight_loaders.CheckpointWeightLoader(settings["model"]["params_path"]),
@@ -570,26 +693,36 @@ def build_train_config(settings: dict[str, Any], extra_args: tuple[str, ...] = (
         overwrite=settings["checkpoints"]["overwrite"],
         resume=settings["checkpoints"]["resume"],
         wandb_enabled=settings["wandb"]["mode"] == "on"
-        or (settings["wandb"]["mode"] == "auto" and settings["experiment"]["preset"] != "smoke"),
+        or (settings["wandb"]["mode"] == "auto" and not settings["run"]["smoke"]),
         project_name=settings["wandb"]["project"],
         policy_metadata=metadata,
     )
     if extra_args:
         import tyro
 
-        # Structural settings must be visible in YAML, not hidden behind a second parser.
-        allowed = ("--optimizer.", "--ema-decay")
-        if any(arg.startswith("--") and not arg.startswith(allowed) for arg in extra_args):
-            raise ValueError(
-                "Use YAML/normal CLI options for model, data and training; '--' only accepts optimizer/EMA"
-            )
-        config = tyro.cli(config_lib.TrainConfig, default=config, args=list(extra_args))
+        # Parse only the advertised advanced fields. Traversing the entire TrainConfig
+        # also visits adapter datasets and their policy dicts, which aren't CLI types.
+        advanced_type = dataclasses.make_dataclass(
+            "AdvancedOverrides", [("optimizer", type(config.optimizer)), ("ema_decay", float | None)]
+        )
+        advanced = tyro.cli(
+            advanced_type, default=advanced_type(config.optimizer, config.ema_decay), args=list(extra_args)
+        )
+        config = dataclasses.replace(config, optimizer=advanced.optimizer, ema_decay=advanced.ema_decay)
     return dataclasses.replace(
         config,
         checkpoint_assets={
-            CHECKPOINT_CONFIG: yaml.safe_dump({"settings": settings, "extra_args": list(extra_args)}, sort_keys=False)
+            CHECKPOINT_CONFIG: yaml.safe_dump(
+                {"settings": settings_schema.public_settings(settings), "extra_args": list(extra_args)}, sort_keys=False
+            )
         },
     )
+
+
+def validate_extra_args(extra_args: tuple[str, ...]) -> None:
+    """Keep structural overrides out of the optimizer/EMA-only advanced CLI."""
+    if any(arg.startswith("--") and not arg.startswith(("--optimizer.", "--ema-decay")) for arg in extra_args):
+        raise ValueError("Configure model/data/training in YAML; '--' only accepts optimizer/EMA overrides")
 
 
 def policy_semantics(settings: dict[str, Any]) -> dict[str, Any]:
@@ -597,6 +730,14 @@ def policy_semantics(settings: dict[str, Any]) -> dict[str, Any]:
     policy = copy.deepcopy(settings["policy"])
     policy["timing"].pop("execution_steps")
     return policy
+
+
+def model_semantics(settings: dict[str, Any]) -> dict[str, Any]:
+    model = copy.deepcopy(settings["model"])
+    if settings["finetuning"]["vision"] != "lora":
+        model.pop("vision_lora_rank")
+        model.pop("vision_lora_alpha")
+    return model
 
 
 def state_dimension(settings):
@@ -626,6 +767,8 @@ def describe_policy(settings: dict[str, Any]) -> dict[str, Any]:
     first = timing["target_offset_steps"]
     last = first + (timing["action_horizon"] - 1) * timing["stride_steps"]
     return {
+        "pose": copy.deepcopy(policy["pose"]),
+        "state": settings_schema.public_state(policy["state"]),
         "state_column": {"eef": "state.pose", "joint": "state.joint", "both": ["state.pose", "state.joint"]}[
             policy["state"]["space"]
         ],
@@ -636,6 +779,7 @@ def describe_policy(settings: dict[str, Any]) -> dict[str, Any]:
         "target_offsets_steps": [first, last],
         "last_target_time_seconds": last / timing["sample_hz"],
         "action_sample_hz": timing["sample_hz"] / timing["stride_steps"],
-        "label_encoding": f"{action['representation']} / {action['relative_to']} / {action['delta_scope']}; gripper absolute",
+        "action": settings_schema.public_action(action),
+        "gripper_encoding": "absolute_close_ratio",
         "execution_steps": timing["execution_steps"],
     }

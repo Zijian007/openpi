@@ -96,14 +96,14 @@ def prepare_inputs(data: dict, arm: str = "both", cameras: tuple[str, ...] | Non
     selected = cameras_for_arm(arm, cameras)
     selection = arm_slice(arm, np.asarray(data["observation/state"]).shape[-1])
 
-    def _image(key: str, present: bool) -> np.ndarray:
+    def _image(key: str, *, present: bool) -> np.ndarray:
         if not present:
             return _BLANK_RGB.copy()
         return _parse_image(data[key])
 
-    base_image = _image("observation/image", "head_color" in selected)
-    left_wrist = _image("observation/wrist_image_left", "hand_left_color" in selected)
-    right_wrist = _image("observation/wrist_image_right", "hand_right_color" in selected)
+    base_image = _image("observation/image", present="head_color" in selected)
+    left_wrist = _image("observation/wrist_image_left", present="hand_left_color" in selected)
+    right_wrist = _image("observation/wrist_image_right", present="hand_right_color" in selected)
 
     inputs = {
         "state": np.asarray(data["observation/state"])[..., selection].copy(),
@@ -173,14 +173,9 @@ class G2Inputs(transforms.DataTransformFn):
             raise ValueError(f"EEF history must have shape {(history, 20)}")
         if space in ("joint", "both") and joint.shape != (history, 16):
             raise ValueError(f"Joint history must have shape {(history, 16)}")
-        pose_state = convert_pose(pose, pose_settings(self.policy, obs)) if space in ("eef", "both") else None
-        if state_settings["representation"] == "relative":
+        pose_state = _encode_pose_state(self.policy, pose, obs) if space in ("eef", "both") else None
+        if state_settings["representation"] != "absolute":
             name = state_settings["relative_to"]
-            if space in ("eef", "both"):
-                ref = policy_reference(self.policy, obs, name)
-                width = len(ref) // 2
-                mask = np.tile([True] * (width - 1) + [False], 2)
-                pose_state[..., mask] -= ref[mask]
             if space in ("joint", "both"):
                 key = "observation/start_joint" if name == "episode_start_pose" else "observation/object_joint"
                 if key not in obs:
@@ -213,6 +208,27 @@ class G2Inputs(transforms.DataTransformFn):
 
     def _select(self, dim):
         return slice(None) if self.arm == "both" else slice(0, dim // 2) if self.arm == "left" else slice(dim // 2, dim)
+
+
+def _encode_pose_state(policy, history, obs):
+    """Reuse pose geometry for measured history, fixed to one observation-time reference.
+
+    State encoding is independent of the actual action quantity, representation and scope.
+    Canonical base/flange history and the reference both undergo policy.pose conversion.
+    """
+    state = policy["state"]
+    codec_policy = {
+        "pose": policy["pose"],
+        "action": {
+            "space": "eef",
+            "control_quantity": "pose_target",
+            "label_source": "measured",
+            "representation": "component_delta" if state["representation"] == "relative" else state["representation"],
+            "relative_to": state["relative_to"],
+            "delta_scope": None if state["representation"] == "absolute" else "chunk",
+        },
+    }
+    return ActionCodec(codec_policy).encode(history, obs)
 
 
 @dataclasses.dataclass(frozen=True)

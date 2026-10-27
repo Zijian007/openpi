@@ -1,5 +1,7 @@
 # OpenPI G2 inference-time RTC
 
+[返回入口](../README.md)
+
 This uses the existing Pi05 checkpoint and its saved normalization statistics.
 No training configuration or checkpoint weights change. Both server and client
 must be updated; the opt-in protocol extension is `openpi.rtc.v1`.
@@ -14,7 +16,7 @@ bash scripts/g2/deploy/serve_policy.sh \
   --port 8001 --rtc --rtc-soft-overlap-steps 5 --rtc-guidance 10
 ```
 
-Checkpoint semantics come from `assets/g2_train_config.yaml`. `deploy/config.yaml` already sets port 8001 and RTC; the flags above only override that file. Checkpoints without a snapshot still need `legacy_preset` in the deploy YAML.
+Checkpoint semantics come from `assets/g2_train_config.yaml`. `configs/deploy.yaml` already sets port 8001 and RTC; the flags above only override that file. Checkpoints without a snapshot still need `legacy_preset` in the deploy YAML.
 
 Warmup runs both ordinary and guided inference before opening the port. Metadata
 advertises `rtc_supported`, `rtc_protocol`, `rtc_soft_overlap_steps`,
@@ -104,6 +106,6 @@ the server warmup and client smoke/fake checks using the actual checkpoint.
 Algorithm reference: [Physical Intelligence RTC implementation](https://github.com/Physical-Intelligence/real-time-chunking-kinetix/blob/main/src/model.py).
 
 Additional control quantities, histories, references, and target offsets use
-`g2.policy.v3`; see [Policy configuration](POLICY_CONFIG.md).
+`g2.policy.v3`; see [Policy configuration](policy.md).
 RTC prefixes always use that control quantity's full wire width and canonical coordinates,
 and are encoded without applying training-label time offsets or subsampling again.
