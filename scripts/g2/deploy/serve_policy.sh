@@ -9,7 +9,7 @@
 # Smoke (another terminal; wait until warmup logs + healthz):
 #   bash scripts/g2/deploy/smoke_infer_client.sh --port 8000
 #
-# Starts official scripts/serve_policy.py. Prompt is sent by the domain controller.
+# Starts scripts/g2/deploy/serve_policy.py. Prompt is sent by the domain controller.
 # Observation keys must match g2_policy.G2Inputs / make_g2_example().
 
 set -euo pipefail
@@ -175,7 +175,7 @@ PICK_ARGS=(
   --checkpoint-base-dir="${CHECKPOINT_BASE_DIR}"
 )
 [[ -n "${POLICY_DIR}" ]] && PICK_ARGS+=(--policy-dir="${POLICY_DIR}")
-POLICY_DIR="$(uv run "${PICK_ARGS[@]}")"
+POLICY_DIR="$(uv run --extra g2 "${PICK_ARGS[@]}")"
 
 WARMUP_FLAG=--warmup
 [[ "${WARMUP}" == true ]] || WARMUP_FLAG=--no-warmup
@@ -194,7 +194,7 @@ echo "GPU:    CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "smoke:  bash scripts/g2/deploy/smoke_infer_client.sh --port ${PORT}"
 echo "========================================"
 
-uv run scripts/serve_policy.py \
+uv run --extra g2 scripts/g2/deploy/serve_policy.py \
   --port="${PORT}" \
   "${WARMUP_FLAG}" \
   "${RTC_FLAG}" \

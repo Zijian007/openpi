@@ -19,7 +19,7 @@ from train_pipeline import _resolve
 from train_pipeline import main
 from train_pipeline import normalize_child_status
 
-from openpi.training import g2_config
+from openpi.adapters.g2 import config as g2_config
 
 
 def resolve(argv):
@@ -130,11 +130,11 @@ def test_dataset_check_uses_cli_resolved_path_and_camera_selection(tmp_path):
     meta = tmp_path / "other/dataset/meta"
     meta.mkdir(parents=True)
     features = {name: {} for name in ("state.pose", "action.pose", "observation.images.head_color")}
-    (meta / "info.json").write_text(json.dumps({"codebase_version": "v2.1", "features": features}))
+    (meta / "info.json").write_text(json.dumps({"codebase_version": "v2.1", "features": features, "fps": 30.0}))
     (meta / "episodes_stats.jsonl").touch()
     _check_dataset(settings)
     del features["action.pose"]
-    (meta / "info.json").write_text(json.dumps({"codebase_version": "v2.1", "features": features}))
+    (meta / "info.json").write_text(json.dumps({"codebase_version": "v2.1", "features": features, "fps": 30.0}))
     with pytest.raises(ValueError, match="action.pose"):
         _check_dataset(settings)
 
@@ -155,3 +155,105 @@ def test_changed_action_settings_invalidate_auto_norm(tmp_path):
 @pytest.mark.parametrize(("return_code", "expected"), [(0, 0), (130, 130), (-2, 130), (-15, 143)])
 def test_normalize_child_status(return_code, expected):
     assert normalize_child_status(return_code) == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fps", 0.0),
+        ("pose_frame", "world"),
+        ("rotation", "quaternion"),
+        ("action_supervision", "state"),
+    ],
+)
+def test_dataset_contract_rejects_incompatible_declarations(tmp_path, field, value):
+    settings = resolve(["--data-root", str(tmp_path)])
+    meta = tmp_path / settings["data"]["repo_id"] / "meta"
+    meta.mkdir(parents=True)
+    info = {
+        "codebase_version": "v2.1",
+        "fps": 30.0,
+        "features": {
+            name: {}
+            for name in (
+                "state.pose",
+                "action.pose",
+                "observation.images.head_color",
+                "observation.images.hand_right_color",
+            )
+        },
+        "wholebody_export": {"pose_frame": "base_link", "rotation": "rot6d", "action_supervision": "command"},
+    }
+    if field == "fps":
+        info[field] = value
+    else:
+        info["wholebody_export"][field] = value
+    (meta / "info.json").write_text(json.dumps(info))
+    (meta / "episodes_stats.jsonl").touch()
+    with pytest.raises(ValueError, match="match|must"):
+        _check_dataset(settings)
+
+
+def test_absolute_eef_state_only_requires_pose_column(tmp_path):
+    settings = resolve(["--data-root", str(tmp_path), "--action-representation", "absolute"])
+    settings["data"]["cameras"] = ["head_color"]
+    meta = tmp_path / settings["data"]["repo_id"] / "meta"
+    meta.mkdir(parents=True)
+    features = {name: {} for name in ("state.pose", "action.pose", "observation.images.head_color")}
+    (meta / "info.json").write_text(json.dumps({"codebase_version": "v2.1", "features": features, "fps": 30.0}))
+    (meta / "episodes_stats.jsonl").touch()
+    _check_dataset(settings)
+    settings["policy"]["state"]["space"] = "joint"
+    with pytest.raises(ValueError, match="state.joint"):
+        _check_dataset(settings)
+
+
+def test_state_changes_invalidate_norm_cache_but_execution_length_does_not(tmp_path):
+    args = ["--assets-base-dir", str(tmp_path), "--action-representation", "absolute"]
+    settings = resolve(args)
+    norm = tmp_path / g2_config.config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
+    norm.parent.mkdir(parents=True)
+    norm.write_text("{}")
+    norm.with_name("g2_norm_config.yaml").write_text(yaml.safe_dump(_norm_signature(settings)))
+    for extra, expected in ((["--execution-steps", "10"], "skip=True"), (["--state-space", "joint"], "skip=False")):
+        out = StringIO()
+        with patch.dict(os.environ, {}, clear=True), redirect_stdout(out):
+            main([*args, *extra, "--dry-run"])
+        assert expected in out.getvalue()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_resume_preserves_semantics_and_allows_execution_override(tmp_path, legacy):
+    args = [
+        "--checkpoint-base-dir",
+        str(tmp_path / "checkpoints"),
+        "--assets-base-dir",
+        str(tmp_path / "assets"),
+        "--resume",
+        "--skip-norm",
+    ]
+    settings = resolve(args)
+    root = tmp_path / "checkpoints" / g2_config.config_name(settings) / settings["experiment"]["name"]
+    root.mkdir(parents=True)
+    # Store resolved absolute paths just as train.py does.
+    saved = settings.copy()
+    if legacy:
+        import copy
+
+        saved = copy.deepcopy(settings)
+        saved.pop("schema_version")
+        policy = saved.pop("policy")
+        saved["data"].update(action_space="pose", action_mode="relative")
+        saved["model"]["action_horizon"] = policy["timing"]["prediction_steps"]
+    (root / g2_config.CHECKPOINT_CONFIG).write_text(yaml.safe_dump({"settings": saved, "extra_args": []}))
+    norm = tmp_path / "assets" / g2_config.config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
+    norm.parent.mkdir(parents=True)
+    norm.write_text("{}")
+    with patch("train_pipeline._check_dataset"), patch("train_pipeline._run_command") as run:
+        with patch.dict(os.environ, {}, clear=True):
+            main([*args, "--execution-steps", "10"])
+        assert run.call_count == 1  # mocked worker, no actual training
+    with patch("train_pipeline._check_dataset"), patch("train_pipeline._run_command") as run:
+        with patch.dict(os.environ, {}, clear=True), pytest.raises(ValueError, match="policy semantics"):
+            main([*args, "--prediction-steps", "16"])
+        run.assert_not_called()

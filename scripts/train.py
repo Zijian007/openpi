@@ -285,14 +285,7 @@ def _train(config: _config.TrainConfig, stop: _StopRequest) -> None:
         overwrite=config.overwrite,
         resume=config.resume,
     )
-    if config.g2_training_config is not None:
-        import yaml
-
-        from openpi.training.g2_config import CHECKPOINT_CONFIG
-
-        (config.checkpoint_dir / CHECKPOINT_CONFIG).write_text(
-            yaml.safe_dump(config.g2_training_config, sort_keys=False)
-        )
+    _checkpoints.write_checkpoint_assets(config.checkpoint_dir, config.checkpoint_assets)
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
     data_loader = _data_loader.create_data_loader(
@@ -368,7 +361,7 @@ def _train(config: _config.TrainConfig, stop: _StopRequest) -> None:
                     train_state,
                     data_loader,
                     save_step,
-                    g2_training_config=config.g2_training_config,
+                    checkpoint_assets=config.checkpoint_assets,
                 )
                 saved_step = save_step
             if stop.requested:

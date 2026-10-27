@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import concurrent.futures as futures
 import dataclasses
 import logging
@@ -11,7 +12,6 @@ from etils import epath
 import jax
 import orbax.checkpoint as ocp
 import orbax.checkpoint.future as future
-import yaml
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
@@ -70,7 +70,7 @@ def save_state(
     data_loader: _data_loader.DataLoader,
     step: int,
     *,
-    g2_training_config: dict | None = None,
+    checkpoint_assets: Mapping[str, str] | None = None,
 ):
     def save_assets(directory: epath.Path):
         # Save the normalization stats.
@@ -78,10 +78,7 @@ def save_state(
         norm_stats = data_config.norm_stats
         if norm_stats is not None and data_config.asset_id is not None:
             _normalize.save(directory / data_config.asset_id, norm_stats)
-        if g2_training_config is not None:
-            from openpi.training.g2_config import CHECKPOINT_CONFIG
-
-            (directory / CHECKPOINT_CONFIG).write_text(yaml.safe_dump(g2_training_config, sort_keys=False))
+        write_checkpoint_assets(directory, checkpoint_assets or {})
 
     # Split params that can be used for inference into a separate item.
     with at.disable_typechecking():
@@ -92,6 +89,15 @@ def save_state(
         "params": {"params": params},
     }
     checkpoint_manager.save(step, items)
+
+
+def write_checkpoint_assets(directory: epath.Path | str, assets: Mapping[str, str]) -> None:
+    """Write adapter-owned text files without interpreting their format or contents."""
+    directory = epath.Path(directory)
+    for name, contents in assets.items():
+        if not name or name in (".", "..") or Path(name).name != name or "\\" in name:
+            raise ValueError(f"Checkpoint asset must be a filename, got {name!r}")
+        (directory / name).write_text(contents)
 
 
 def restore_state(
@@ -121,7 +127,7 @@ def find_norm_stats_dir(assets_dir: epath.Path | str, asset_id: str | None = Non
     Training saves stats under ``assets/<asset_id>/``, and ``asset_id`` defaults to
     the LeRobot ``repo_id``. Serving reconstructs a TrainConfig whose default
     ``repo_id`` may differ from the dataset used for that checkpoint (nested
-    paths such as ``vr/Sing_TeaPi/lerobot_v21``). Prefer ``asset_id`` when that
+    paths such as ``org/task/dataset``). Prefer ``asset_id`` when that
     file exists; otherwise use the only copy in the checkpoint.
     """
     assets_dir = epath.Path(assets_dir)

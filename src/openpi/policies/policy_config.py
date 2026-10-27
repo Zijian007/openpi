@@ -7,7 +7,6 @@ import jax.numpy as jnp
 
 import openpi.models.model as _model
 from openpi.models.rtc import RTCConfig
-import openpi.policies.g2_policy as g2_policy
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
 from openpi.training import checkpoints as _checkpoints
@@ -49,19 +48,6 @@ def create_trained_policy(
     if rtc_config is not None and train_config.model.model_type not in (_model.ModelType.PI0, _model.ModelType.PI05):
         raise ValueError("RTC requires a Pi0/Pi05 flow policy")
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
-    # YAML experiments may override horizon, action representation, or cameras.
-    # Reconstruct them from this checkpoint instead of today's edited YAML file.
-    if isinstance(train_config.data, _config.LeRobotG2DataConfig):
-        from openpi.training import g2_config
-
-        snapshot = pathlib.Path(checkpoint_dir) / "assets" / g2_config.CHECKPOINT_CONFIG
-        if snapshot.is_file():
-            payload = g2_config.read_yaml(snapshot)
-            restored = g2_config.build_train_config(payload["settings"], tuple(payload["extra_args"]))
-            if restored.name != train_config.name:
-                raise ValueError(f"Checkpoint config is {restored.name}, requested {train_config.name}")
-            train_config = restored
-
     # Check if this is a PyTorch model by looking for model.safetensors
     weight_path = os.path.join(checkpoint_dir, "model.safetensors")
     is_pytorch = os.path.exists(weight_path)
@@ -89,17 +75,6 @@ def create_trained_policy(
         except ImportError:
             pytorch_device = "cpu"
 
-    metadata = dict(train_config.policy_metadata)
-    if isinstance(train_config.data, _config.LeRobotG2DataConfig):
-        arm = train_config.data.arm
-        metadata.update(
-            arm=arm,
-            # RTC prefix width inside this process. The websocket action is always 20-D.
-            model_action_dim=20 if arm == "both" else 10,
-            required_cameras=list(g2_policy.selected_camera_ids(arm, train_config.data.cameras)),
-            requires_joint_state=not train_config.data.use_delta_actions,
-        )
-
     return _policy.Policy(
         model,
         transforms=[
@@ -116,7 +91,7 @@ def create_trained_policy(
             *repack_transforms.outputs,
         ],
         sample_kwargs=sample_kwargs,
-        metadata=metadata,
+        metadata=train_config.policy_metadata,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
         rtc_config=rtc_config,

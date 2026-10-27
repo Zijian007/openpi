@@ -1,5 +1,10 @@
 # openpi
 
+This checkout focuses on G2. Robot-specific training and deployment instructions are in
+[scripts/g2/README.md](scripts/g2/README.md). The upstream examples and third-party
+submodules are omitted; example links below point to upstream source. Commands that
+use example scripts require a separate upstream checkout at `/path/to/upstream-openpi`.
+
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
 
 Currently, this repo contains three types of models:
@@ -15,8 +20,8 @@ This is an experiment: $\pi_0$ was developed for our own robots, which differ fr
 
 - [Sept 2025] We released PyTorch support in openpi.
 - [Sept 2025] We released pi05, an upgraded version of pi0 with better open-world generalization.
-- [Sept 2025]: We have added an [improved idle filter](examples/droid/README_train.md#data-filtering) for DROID training.
-- [Jun 2025]: We have added [instructions](examples/droid/README_train.md) for using `openpi` to train VLAs on the full [DROID dataset](https://droid-dataset.github.io/). This is an approximate open-source implementation of the training pipeline used to train pi0-FAST-DROID. 
+- [Sept 2025]: We have added an [improved idle filter](https://github.com/Physical-Intelligence/openpi/tree/main/examples/droid/README_train.md#data-filtering) for DROID training.
+- [Jun 2025]: We have added [instructions](https://github.com/Physical-Intelligence/openpi/tree/main/examples/droid/README_train.md) for using `openpi` to train VLAs on the full [DROID dataset](https://droid-dataset.github.io/). This is an approximate open-source implementation of the training pipeline used to train pi0-FAST-DROID.
 
 
 ## Requirements
@@ -33,14 +38,8 @@ The repo has been tested with Ubuntu 22.04, we do not currently support other op
 
 ## Installation
 
-When cloning this repo, make sure to update submodules:
-
-```bash
-git clone --recurse-submodules git@github.com:Physical-Intelligence/openpi.git
-
-# Or if you already cloned the repo:
-git submodule update --init --recursive
-```
+This checkout has no Git submodules. For G2, follow [the G2 setup instructions](scripts/g2/README.md)
+or run `bash scripts/g2/bootstrap.sh`. General OpenPI dependency setup is described below.
 
 We use [uv](https://docs.astral.sh/uv/) to manage Python dependencies. See the [uv installation instructions](https://docs.astral.sh/uv/getting-started/installation/) to set it up. Once uv is installed, run the following to set up the environment:
 
@@ -77,7 +76,7 @@ We also provide "expert" checkpoints for various robot platforms and tasks. Thes
 | $\pi_0$-ALOHA-towel      | Inference   | $\pi_0$ model fine-tuned on internal [ALOHA](https://tonyzhaozh.github.io/aloha/) data: can fold diverse towels 0-shot on ALOHA robot platforms                                                          | `gs://openpi-assets/checkpoints/pi0_aloha_towel`      |
 | $\pi_0$-ALOHA-tupperware | Inference   | $\pi_0$ model fine-tuned on internal [ALOHA](https://tonyzhaozh.github.io/aloha/) data: can unpack food from a tupperware container                                                                                                             | `gs://openpi-assets/checkpoints/pi0_aloha_tupperware` |
 | $\pi_0$-ALOHA-pen-uncap  | Inference   | $\pi_0$ model fine-tuned on public [ALOHA](https://dit-policy.github.io/) data: can uncap a pen                                                                                                          | `gs://openpi-assets/checkpoints/pi0_aloha_pen_uncap`  |
-| $\pi_{0.5}$-LIBERO      | Inference   | $\pi_{0.5}$ model fine-tuned for the [LIBERO](https://libero-project.github.io/datasets) benchmark: gets state-of-the-art performance (see [LIBERO README](examples/libero/README.md)) | `gs://openpi-assets/checkpoints/pi05_libero`      |
+| $\pi_{0.5}$-LIBERO      | Inference   | $\pi_{0.5}$ model fine-tuned for the [LIBERO](https://libero-project.github.io/datasets) benchmark: gets state-of-the-art performance (see [LIBERO README](https://github.com/Physical-Intelligence/openpi/tree/main/examples/libero/README.md)) | `gs://openpi-assets/checkpoints/pi05_libero`      |
 | $\pi_{0.5}$-DROID      | Inference / Fine-Tuning | $\pi_{0.5}$ model fine-tuned on the [DROID dataset](https://droid-dataset.github.io/) with [knowledge insulation](https://www.physicalintelligence.company/research/knowledge_insulation): fast inference and good language-following | `gs://openpi-assets/checkpoints/pi05_droid`      |
 
 
@@ -109,13 +108,13 @@ example = {
 }
 action_chunk = policy.infer(example)["actions"]
 ```
-You can also test this out in the [example notebook](examples/inference.ipynb).
+You can also test this out in the [example notebook](https://github.com/Physical-Intelligence/openpi/tree/main/examples/inference.ipynb).
 
-We provide detailed step-by-step examples for running inference of our pre-trained checkpoints on [DROID](examples/droid/README.md) and [ALOHA](examples/aloha_real/README.md) robots.
+We provide detailed step-by-step examples for running inference of our pre-trained checkpoints on [DROID](https://github.com/Physical-Intelligence/openpi/tree/main/examples/droid/README.md) and [ALOHA](https://github.com/Physical-Intelligence/openpi/tree/main/examples/aloha_real/README.md) robots.
 
 **Remote Inference**: We provide [examples and code](docs/remote_inference.md) for running inference of our models **remotely**: the model can run on a different server and stream actions to the robot via a websocket connection. This makes it easy to use more powerful GPUs off-robot and keep robot and policy environments separate.
 
-**Test inference without a robot**: We provide a [script](examples/simple_client/README.md) for testing inference without a robot. This script will generate a random observation and run inference with the model. See [here](examples/simple_client/README.md) for more details.
+**Test inference without a robot**: We provide a [script](https://github.com/Physical-Intelligence/openpi/tree/main/examples/simple_client/README.md) for testing inference without a robot. This script will generate a random observation and run inference with the model. See [here](https://github.com/Physical-Intelligence/openpi/tree/main/examples/simple_client/README.md) for more details.
 
 
 
@@ -130,10 +129,10 @@ We will fine-tune the $\pi_{0.5}$ model on the [LIBERO dataset](https://libero-p
 
 ### 1. Convert your data to a LeRobot dataset
 
-We provide a minimal example script for converting LIBERO data to a LeRobot dataset in [`examples/libero/convert_libero_data_to_lerobot.py`](examples/libero/convert_libero_data_to_lerobot.py). You can easily modify it to convert your own data! You can download the raw LIBERO dataset from [here](https://huggingface.co/datasets/openvla/modified_libero_rlds), and run the script with:
+We provide a minimal example script for converting LIBERO data to a LeRobot dataset in [`examples/libero/convert_libero_data_to_lerobot.py`](https://github.com/Physical-Intelligence/openpi/tree/main/examples/libero/convert_libero_data_to_lerobot.py). You can easily modify it to convert your own data! You can download the raw LIBERO dataset from [here](https://huggingface.co/datasets/openvla/modified_libero_rlds), and run the script with:
 
 ```bash
-uv run examples/libero/convert_libero_data_to_lerobot.py --data_dir /path/to/your/libero/data
+uv run /path/to/upstream-openpi/examples/libero/convert_libero_data_to_lerobot.py --data_dir /path/to/your/libero/data
 ```
 
 **Note:** If you just want to fine-tune on LIBERO, you can skip this step, because our LIBERO fine-tuning configs point to a pre-converted LIBERO dataset. This step is merely an example that you can adapt to your own data.
@@ -174,7 +173,7 @@ uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi05_libero --p
 
 This will spin up a server that listens on port 8000 and waits for observations to be sent to it. We can then run an evaluation script (or robot runtime) that queries the server.
 
-For running the LIBERO eval in particular, we provide (and recommend using) a Dockerized workflow that handles both the policy server and the evaluation script together. See the [LIBERO README](examples/libero/README.md) for more details.
+For running the LIBERO eval in particular, we provide (and recommend using) a Dockerized workflow that handles both the policy server and the evaluation script together. See the [LIBERO README](https://github.com/Physical-Intelligence/openpi/tree/main/examples/libero/README.md) for more details.
 
 If you want to embed a policy server call in your own robot runtime, we have a minimal example of how to do so in the [remote inference docs](docs/remote_inference.md).
 
@@ -183,9 +182,9 @@ If you want to embed a policy server call in your own robot runtime, we have a m
 ### More Examples
 
 We provide more examples for how to fine-tune and run inference with our models on the ALOHA platform in the following READMEs:
-- [ALOHA Simulator](examples/aloha_sim)
-- [ALOHA Real](examples/aloha_real)
-- [UR5](examples/ur5)
+- [ALOHA Simulator](https://github.com/Physical-Intelligence/openpi/tree/main/examples/aloha_sim)
+- [ALOHA Real](https://github.com/Physical-Intelligence/openpi/tree/main/examples/aloha_real)
+- [UR5](https://github.com/Physical-Intelligence/openpi/tree/main/examples/ur5)
 
 ## PyTorch Support
 
@@ -216,7 +215,7 @@ This overwrites several files in the transformers library with necessary model c
 To convert a JAX model checkpoint to PyTorch format:
 
 ```bash
-uv run examples/convert_jax_model_to_pytorch.py \
+uv run /path/to/upstream-openpi/examples/convert_jax_model_to_pytorch.py \
     --checkpoint_dir /path/to/jax/checkpoint \
     --config_name <config name> \
     --output_path /path/to/converted/pytorch/checkpoint
@@ -257,7 +256,7 @@ To finetune a model in PyTorch:
 
 1. Convert the JAX base model to PyTorch format:
    ```bash
-   uv run examples/convert_jax_model_to_pytorch.py \
+   uv run /path/to/upstream-openpi/examples/convert_jax_model_to_pytorch.py \
        --config_name <config name> \
        --checkpoint_dir /path/to/jax/base/model \
        --output_path /path/to/pytorch/base/model

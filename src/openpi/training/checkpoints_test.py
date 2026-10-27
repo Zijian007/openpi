@@ -13,11 +13,11 @@ def _write_norm_stats(directory: Path) -> None:
 
 def test_find_norm_stats_dir_prefers_asset_id(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
-    _write_norm_stats(assets / "g2_vr_lerobot_v21")
+    _write_norm_stats(assets / "default_dataset")
     _write_norm_stats(assets / "vr" / "Sing_TeaPi" / "lerobot_v21")
 
-    found = find_norm_stats_dir(assets, "g2_vr_lerobot_v21")
-    assert Path(str(found)) == assets / "g2_vr_lerobot_v21"
+    found = find_norm_stats_dir(assets, "default_dataset")
+    assert Path(str(found)) == assets / "default_dataset"
 
 
 def test_find_norm_stats_dir_nested_repo_id_when_config_default_missing(tmp_path: Path) -> None:
@@ -25,9 +25,9 @@ def test_find_norm_stats_dir_nested_repo_id_when_config_default_missing(tmp_path
     nested = assets / "vr" / "Sing_TeaPi" / "lerobot_v21"
     _write_norm_stats(nested)
 
-    found = find_norm_stats_dir(assets, "g2_vr_lerobot_v21")
+    found = find_norm_stats_dir(assets, "default_dataset")
     assert Path(str(found)) == nested
-    loaded = load_norm_stats(assets, "g2_vr_lerobot_v21")
+    loaded = load_norm_stats(assets, "default_dataset")
     assert loaded == {}
 
 
@@ -37,18 +37,17 @@ def test_find_norm_stats_dir_ambiguous_copies_raise(tmp_path: Path) -> None:
     _write_norm_stats(assets / "dataset_b")
 
     with pytest.raises(FileNotFoundError, match="Multiple copies"):
-        find_norm_stats_dir(assets, "g2_vr_lerobot_v21")
+        find_norm_stats_dir(assets, "default_dataset")
 
 
 def test_save_state_captures_yaml_settings_with_checkpoint_assets(tmp_path, monkeypatch):
+    import json
     from types import SimpleNamespace
 
-    import yaml
-
     from openpi.training import checkpoints
-    from openpi.training.g2_config import CHECKPOINT_CONFIG
 
-    snapshot = {"settings": {"model": {"action_horizon": 30}}, "extra_args": []}
+    snapshot = {"model": {"action_horizon": 30}}
+    name = "run_config.json"
     saved = {}
 
     def save(step, items):
@@ -57,6 +56,16 @@ def test_save_state_captures_yaml_settings_with_checkpoint_assets(tmp_path, monk
 
     monkeypatch.setattr(checkpoints, "_split_params", lambda state: (state, {}))
     loader = SimpleNamespace(data_config=lambda: SimpleNamespace(norm_stats=None, asset_id="test"))
-    checkpoints.save_state(SimpleNamespace(save=save), object(), loader, 5000, g2_training_config=snapshot)
+    checkpoints.save_state(
+        SimpleNamespace(save=save), object(), loader, 5000, checkpoint_assets={name: json.dumps(snapshot)}
+    )
     assert saved["step"] == 5000
-    assert yaml.safe_load((tmp_path / CHECKPOINT_CONFIG).read_text()) == snapshot
+    assert json.loads((tmp_path / name).read_text()) == snapshot
+
+
+@pytest.mark.parametrize("name", ["../outside.yaml", "/tmp/outside.yaml", "nested/config.yaml", "..", ""])
+def test_checkpoint_extra_assets_require_plain_filenames(tmp_path, name):
+    from openpi.training.checkpoints import write_checkpoint_assets
+
+    with pytest.raises(ValueError, match="filename"):
+        write_checkpoint_assets(tmp_path, {name: "contents"})

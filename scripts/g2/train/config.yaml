@@ -1,6 +1,8 @@
 # 日常训练只改这份文件。相对路径均相对于 OpenPI 仓库根目录。
 # Shell 入口显式读取本文件，不接收额外参数；Python 入口支持 CLI 临时覆盖。
 # train_smoke.sh 使用 batch=1、steps=20，并自动生成独立实验名。
+schema_version: 2
+
 experiment:
   name: Sing_TeaPi
   preset: low_mem             # low_mem = LoRA；full_ft = 全参；smoke = 短跑
@@ -9,14 +11,41 @@ experiment:
 data:
   root: ./data
   repo_id: vr/Sing_TeaPi/lerobot_v21
-  action_space: pose          # 当前 G2 适配器支持末端位姿，暂不支持 joint
-  action_mode: relative       # relative: state.pose 为参考，夹爪绝对；absolute: state.joint 作状态
   # null = 双臂用三路，单臂用头部和对应腕部。
   # 可显式设为 [head_color] 或 [head_color, hand_left_color, hand_right_color]。
   cameras: null               # 必须包含 head_color；单臂不能选另一只手的腕部
 
+policy:
+  pose:
+    parent_frame: base_link   # 目标父坐标系；其他坐标系必须提供 base_to_parent
+    ee_frame: flange          # 原始数据/通信为 flange；其他末端需提供 flange_to_tcp
+    rotation: rot6d           # rot6d | quaternion (xyzw) | axis_angle (rad)
+    base_to_parent: null      # 4x4: T_parent_base；observation = 每帧读取 reference.base_to_parent
+    flange_to_tcp: null       # {left: 4x4, right: 4x4}，T_flange_tcp，需真实标定
+
+  state:
+    space: eef               # eef | joint | both (EEF + Joint)
+    representation: absolute # absolute | relative；相对状态需明确 relative_to
+    relative_to: null
+
+  action:
+    space: eef               # eef | joint，与 control_quantity 对应
+    control_quantity: pose_target # pose_target | joint_position | joint_velocity | eef_twist | joint_torque
+    label_source: command    # command | measured；夹爪始终绝对
+    representation: component_delta # absolute | component_delta | se3_body_delta | se3_spatial_delta | hybrid_delta
+    relative_to: current_measured_pose # 也支持 current_command_pose / previous_command_pose / episode_start_pose / object_pose
+    delta_scope: chunk       # chunk 共用参考；step 逐步增量并累积还原
+    # absolute 时 relative_to 和 delta_scope 均设为 null。
+
+  timing:
+    sample_hz: 30.0          # 目标采样率；与原数据不同时进行插值/重采样
+    history_steps: 1         # 状态按时间拼接；图像按时间横向拼图，部署需提供完整历史
+    prediction_steps: 50     # H：预测帧数，模型 action_horizon 从此处推导
+    execution_steps: null    # K：null 交给部署端；整数写入服务端 metadata
+    target_offset_steps: 0   # 第一帧标签相对当前观测的偏移，单位 1/sample_hz
+    stride_steps: 1          # 标签间隔，动作频率 = sample_hz / stride_steps
+
 model:
-  action_horizon: 50
   discrete_state_input: true  # 将当前状态编码进 prompt
   params_path: gs://openpi-assets/checkpoints/pi05_base/params
 

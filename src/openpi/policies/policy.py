@@ -83,7 +83,7 @@ class Policy(BasePolicy):
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         rtc_enabled = inputs.pop("rtc_enabled", False)
-        if not isinstance(rtc_enabled, (bool, np.bool_)):
+        if not isinstance(rtc_enabled, bool | np.bool_):
             raise ValueError("rtc_enabled must be boolean")
         leftover = inputs.pop("prev_chunk_left_over", None)
         inference_delay = inputs.pop("inference_delay", 0)
@@ -117,7 +117,11 @@ class Policy(BasePolicy):
                 inference_delay=inference_delay if rtc_enabled else 0,
                 config=self._rtc_config,
             )
-            valid = 0 if transformed_prefix is None or not rtc_enabled else min(len(transformed_prefix), self._action_horizon)
+            valid = (
+                0
+                if transformed_prefix is None or not rtc_enabled
+                else min(len(transformed_prefix), self._action_horizon)
+            )
             guided_delay = int(inference_delay) if valid else 0
             rtc_info = {
                 "delay_steps": guided_delay,
@@ -166,12 +170,6 @@ class Policy(BasePolicy):
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
         outputs = self._output_transform(outputs)
-        if self._metadata.get("robot") == "g2" and self._metadata.get("arm", "both") != "both":
-            from openpi.policies.g2_policy import expand_arm_actions
-
-            outputs["actions"] = expand_arm_actions(
-                outputs["actions"], obs["observation/state"], self._metadata["arm"]
-            )
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }

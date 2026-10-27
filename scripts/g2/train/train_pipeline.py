@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -17,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from openpi.training import g2_config
+from openpi.adapters.g2 import config as g2_config
 
 PROJECT_ROOT = g2_config.PROJECT_ROOT
 
@@ -53,6 +54,11 @@ def _parse_argv(argv: list[str]):
     for flag in ("exp-name", "repo-id", "data-root", "checkpoint-base-dir", "assets-base-dir", "params-path"):
         parser.add_argument(f"--{flag}")
     parser.add_argument("--action-mode", choices=("relative", "absolute"))
+    parser.add_argument("--state-space", choices=("joint", "eef", "both"))
+    parser.add_argument(
+        "--action-representation",
+        choices=("absolute", "component_delta", "se3_body_delta", "se3_spatial_delta", "hybrid_delta"),
+    )
     for flag in (
         "batch-size",
         "num-workers",
@@ -62,6 +68,7 @@ def _parse_argv(argv: list[str]):
         "seed",
         "fsdp-devices",
         "action-horizon",
+        "prediction-steps",
         "max-frames",
         "warmup-steps",
         "decay-steps",
@@ -70,6 +77,9 @@ def _parse_argv(argv: list[str]):
     for flag in ("peak-lr", "decay-lr"):
         parser.add_argument(f"--{flag}", type=float)
     parser.add_argument("--keep-period", type=lambda value: None if value.lower() in ("none", "null") else int(value))
+    parser.add_argument(
+        "--execution-steps", type=lambda value: None if value.lower() in ("none", "null") else int(value)
+    )
     for flag in ("overwrite", "resume", "use-proxy"):
         parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction)
     parser.add_argument("--no-proxy", dest="use_proxy", action="store_false")
@@ -139,20 +149,79 @@ def _check_dataset(settings):
     if info.get("codebase_version") != "v2.1":
         raise ValueError(f"Expected LeRobot v2.1 in {root}, got {info.get('codebase_version')!r}")
     features = info.get("features", {})
-    state = "state.pose" if settings["data"]["action_mode"] == "relative" else "state.joint"
-    required = {
-        state,
-        "action.pose",
-        *(f"observation.images.{camera}" for camera in g2_config.selected_cameras(settings)),
-    }
+    policy = settings["policy"]
+    action = policy["action"]
+    state = policy["state"]["space"]
+    required = {*(f"observation.images.{camera}" for camera in g2_config.selected_cameras(settings))}
+    if state in ("eef", "both") or action["space"] == "eef":
+        required.add("state.pose")
+    if state in ("joint", "both") or action["space"] == "joint":
+        required.add("state.joint")
+    prefix = "action" if action["label_source"] == "command" else "state"
+    suffix = {
+        "pose_target": "pose",
+        "joint_position": "joint",
+        "joint_velocity": "joint_velocity",
+        "eef_twist": "eef_twist",
+        "joint_torque": "joint_torque",
+    }[action["control_quantity"]]
+    label = f"{prefix}.{suffix}"
+    if label not in features and suffix in ("joint_velocity", "eef_twist"):
+        required.add(f"{prefix}.{'joint' if suffix == 'joint_velocity' else 'pose'}")
+    else:
+        required.add(label)
+    references = {policy["state"]["relative_to"], action["relative_to"]}
+    if references.intersection({"current_command_pose", "previous_command_pose"}):
+        required.add("action.pose")
+    if "object_pose" in references:
+        if (policy["state"]["relative_to"] == "object_pose" and state in ("eef", "both")) or action[
+            "relative_to"
+        ] == "object_pose":
+            required.add("reference.object_pose")
+        if policy["state"]["representation"] == "relative" and state in ("joint", "both"):
+            required.add("reference.object_joint")
+    if policy["pose"]["base_to_parent"] == "observation":
+        required.add("reference.base_to_parent")
     missing = required - features.keys()
     if missing:
         raise ValueError(f"Dataset is missing required features: {sorted(missing)}")
+    fps = info.get("fps")
+    if type(fps) not in (int, float) or not math.isfinite(fps) or fps <= 0:
+        raise ValueError("Dataset fps must be a positive finite number")
+    exported = info.get("wholebody_export", {})
+    # Dataset and wire remain canonical; policy coordinates are converted in the adapter.
+    for field, expected in (("pose_frame", "base_link"), ("ee_frame", "flange"), ("rotation", "rot6d")):
+        if field in exported and exported[field] != expected:
+            raise ValueError(f"Dataset wholebody_export.{field}={exported[field]!r} must match {expected!r}")
+    if (
+        action["label_source"] == "command"
+        and "action_supervision" in exported
+        and exported["action_supervision"] != "command"
+    ):
+        raise ValueError("Dataset wholebody_export.action_supervision must match command labels")
+    for field, dim in (
+        ("state.pose", 20),
+        ("state.joint", 16),
+        ("action.pose", 20),
+        ("action.joint", 16),
+        (
+            label,
+            14
+            if suffix == "eef_twist"
+            else 16
+            if suffix in ("joint_velocity", "joint_torque")
+            else 20
+            if suffix == "pose"
+            else 16,
+        ),
+    ):
+        if field in required and "shape" in features[field] and features[field]["shape"] != [dim]:
+            raise ValueError(f"Dataset {field} must have shape [{dim}]")
 
 
 def _run_stage(stage: str, snapshot: Path):
     payload = g2_config.read_yaml(snapshot)
-    settings = payload["settings"]
+    settings = g2_config.upgrade_settings(payload["settings"])
     _setup_runtime(settings)  # must precede importing JAX/LeRobot
     config = g2_config.build_train_config(settings, tuple(payload["extra_args"]))
     # scripts/ contains the official entrypoints, without needing to be a package.
@@ -207,9 +276,8 @@ def _norm_signature(settings):
         "data_root": settings["data"]["root"],
         "repo_id": settings["data"]["repo_id"],
         "arm": settings["experiment"]["arm"],
-        "action_mode": settings["data"]["action_mode"],
+        "policy": g2_config.policy_semantics(settings),
         "cameras": list(g2_config.selected_cameras(settings)),
-        "action_horizon": settings["model"]["action_horizon"],
     }
 
 
@@ -236,6 +304,8 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Norm stats: {norm_path} (skip={skip_norm})")
     print("Resolved experiment configuration:")
     print(yaml.safe_dump(settings, sort_keys=False, allow_unicode=True), flush=True)
+    print("Derived policy contract:")
+    print(yaml.safe_dump(g2_config.describe_policy(settings), sort_keys=False, allow_unicode=True), flush=True)
     if dry_run:
         print("[dry-run] No data access, downloads, normalization, or training.")
         print(f"[1/2] {'reuse' if skip_norm else 'compute'} norm stats using the resolved config above")
@@ -254,11 +324,16 @@ def main(argv: list[str] | None = None) -> None:
     if settings["checkpoints"]["resume"] and not norm_only:
         previous = ckpt_dir / g2_config.CHECKPOINT_CONFIG
         if previous.is_file():
-            old = g2_config.read_yaml(previous)
+            old = g2_config.upgrade_settings(g2_config.read_yaml(previous)["settings"])
             # Resume may change total steps / logging / LR, but must preserve input/output semantics.
             for section in ("data", "model"):
-                if old["settings"][section] != settings[section]:
+                if old[section] != settings[section]:
                     raise ValueError(f"Cannot resume with changed {section} settings; use a new experiment.name")
+            if (
+                g2_config.policy_semantics(old) != g2_config.policy_semantics(settings)
+                or old["experiment"]["arm"] != settings["experiment"]["arm"]
+            ):
+                raise ValueError("Cannot resume with changed policy semantics; use a new experiment.name")
     with tempfile.TemporaryDirectory(prefix="g2-train-", dir="/tmp") as temporary:
         snapshot = Path(temporary) / g2_config.CHECKPOINT_CONFIG
         snapshot.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True))

@@ -2,11 +2,9 @@ import dataclasses
 import enum
 import logging
 import socket
-import time
 
 import tyro
 
-from openpi.models.rtc import RTCConfig
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
@@ -52,14 +50,6 @@ class Args:
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
-    # Run a dummy infer before listen so JAX JIT is not paid by the robot's first chunk.
-    warmup: bool = False
-    # Inference-time guidance; uses the same checkpoint as ordinary inference.
-    rtc: bool = False
-    # Width of decaying prefix guidance AFTER the estimated inference delay.
-    rtc_soft_overlap_steps: int = 5
-    rtc_guidance: float = 10.0
-
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
@@ -98,69 +88,13 @@ def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
     match args.policy:
         case Checkpoint():
-            if args.rtc and not args.policy.config.startswith("pi05_g2"):
-                raise ValueError("This RTC wire deployment requires a pi05_g2 configuration")
             return _policy_config.create_trained_policy(
                 _config.get_config(args.policy.config),
                 args.policy.dir,
                 default_prompt=args.default_prompt,
-                rtc_config=RTCConfig(
-                    soft_overlap_steps=args.rtc_soft_overlap_steps, max_guidance_weight=args.rtc_guidance
-                )
-                if args.rtc
-                else None,
             )
         case Default():
-            if args.rtc:
-                raise ValueError("RTC requires an explicit G2 checkpoint")
             return create_default_policy(args.env, default_prompt=args.default_prompt)
-
-
-def _g2_warmup_obs() -> dict:
-    from openpi.policies import g2_policy
-
-    return g2_policy.make_g2_example()
-
-
-def _warmup(policy: _policy.Policy, args: Args) -> None:
-    """Compile ``sample_actions`` before binding the port (healthz stays down until done)."""
-    if not args.warmup:
-        return
-    config_name = args.policy.config if isinstance(args.policy, Checkpoint) else None
-    if not config_name or not str(config_name).startswith("pi05_g2"):
-        logging.info("warmup skipped (not a G2 config: %s)", config_name)
-        return
-
-    obs = _g2_warmup_obs()
-    if policy.metadata.get("requires_joint_state", False):
-        import numpy as np
-
-        obs["observation/state"] = np.zeros(16, dtype=np.float32)
-    previous_actions = None
-    logging.info("warmup start (JIT) images=224x224 prompt=%r", obs.get("prompt"))
-    for step in range(4 if args.rtc else 2):
-        if args.rtc and step == 2:
-            obs = {**obs, "rtc_enabled": True, "prev_chunk_left_over": previous_actions, "inference_delay": 2}
-        t0 = time.monotonic()
-        out = policy.infer(obs)
-        previous_actions = out["actions"]
-        infer_ms = (time.monotonic() - t0) * 1000.0
-        policy_ms = None
-        timing = out.get("policy_timing") if isinstance(out, dict) else None
-        if isinstance(timing, dict) and "infer_ms" in timing:
-            try:
-                policy_ms = float(timing["infer_ms"])
-            except (TypeError, ValueError):
-                policy_ms = None
-        actions = out.get("actions") if isinstance(out, dict) else None
-        shape = getattr(actions, "shape", None)
-        logging.info(
-            "warmup step=%d infer_ms=%.1f policy_ms=%s actions=%s",
-            step,
-            infer_ms,
-            "-" if policy_ms is None else f"{policy_ms:.1f}",
-            shape,
-        )
 
 
 def main(args: Args) -> None:
@@ -171,8 +105,6 @@ def main(args: Args) -> None:
     if args.record:
         policy = _policy.PolicyRecorder(policy, "policy_records")
 
-    _warmup(policy, args)
-
     hostname = socket.gethostname()
     try:
         local_ip = socket.gethostbyname(hostname)
@@ -180,12 +112,7 @@ def main(args: Args) -> None:
         local_ip = "unknown"
     logging.info("Creating server (host: %s, ip: %s, port: %s)", hostname, local_ip, args.port)
 
-    server_type = websocket_policy_server.WebsocketPolicyServer
-    if policy_metadata.get("robot") == "g2":
-        from openpi.serving.g2_policy_server import G2PolicyServer
-
-        server_type = G2PolicyServer
-    server = server_type(
+    server = websocket_policy_server.WebsocketPolicyServer(
         policy=policy,
         host="0.0.0.0",
         port=args.port,

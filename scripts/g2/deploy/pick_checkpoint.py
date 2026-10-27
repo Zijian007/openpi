@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pick a G2 checkpoint step dir for official ``scripts/serve_policy.py``.
+"""Pick a G2 checkpoint step dir for ``scripts/g2/deploy/serve_policy.py``.
 
 Empty --policy-dir → newest experiment (by latest step mtime), then its highest
 numeric step. Prints the resolved path on stdout.

@@ -3119,7 +3119,6 @@ dependencies = [
     { name = "flatbuffers" },
     { name = "flax" },
     { name = "fsspec", extra = ["gcs"] },
-    { name = "g2-policy-protocol" },
     { name = "gym-aloha" },
     { name = "imageio" },
     { name = "jax", extra = ["cuda12"] },
@@ -3143,6 +3142,11 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "tyro" },
     { name = "wandb" },
+]
+
+[package.optional-dependencies]
+g2 = [
+    { name = "g2-policy-protocol" },
 ]
 
 [package.dev-dependencies]
@@ -3173,7 +3177,7 @@ requires-dist = [
     { name = "flatbuffers", specifier = ">=24.3.25" },
     { name = "flax", specifier = "==0.10.2" },
     { name = "fsspec", extras = ["gcs"], specifier = ">=2024.6.0" },
-    { name = "g2-policy-protocol", directory = "../g2-policy-protocol" },
+    { name = "g2-policy-protocol", marker = "extra == 'g2'", directory = "../g2-policy-protocol" },
     { name = "gym-aloha", specifier = ">=0.1.1" },
     { name = "imageio", specifier = ">=2.36.1" },
     { name = "jax", extras = ["cuda12"], specifier = "==0.5.3" },
@@ -3198,6 +3202,7 @@ requires-dist = [
     { name = "tyro", specifier = ">=0.9.5" },
     { name = "wandb", specifier = ">=0.19.1" },
 ]
+provides-extras = ["g2"]
 
 [package.metadata.requires-dev]
 dev = [

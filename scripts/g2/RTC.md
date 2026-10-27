@@ -43,8 +43,9 @@ acquisition, including sampler-held knots, fractional interpolation, and any
 active bridge. Prefix knots are absolute EE20 at `start + n / policy_hz`.
 
 The server inserts the prefix as `actions` into the same input transforms used
-for training: G2 input mapping, subtraction of the **current measured pose** for
-delta-enabled dimensions, checkpoint normalization, and model dimension padding.
+for training: G2 input mapping, the configured ActionCodec reference/representation,
+checkpoint normalization, and model dimension padding. The default is component
+delta against the current measured pose, independently of the model state space.
 Grippers remain absolute. Padded time steps and action dimensions have zero
 guidance weight. Nothing is subtracted or normalized on the domain controller.
 
@@ -81,7 +82,7 @@ an explicit interval overrides the ratio. Neither setting changes model horizon.
 The wholebody baseline uses interval 13, delay floor 13 and bridge 0.08 s; the
 server defaults to soft overlap 5 and guidance 10. These are separate controls,
 not a single execution horizon. Do not change `policy_hz` independently of the
-checkpoint's training FPS. Logs include prefix/estimated/actual delay plus
+checkpoint's action sampling frequency (sample_hz / stride_steps). Logs include prefix/estimated/actual delay plus
 `[pi05 RTC guidance]` with applied soft overlap, and warn if it is truncated.
 
 ## Tests
@@ -89,8 +90,8 @@ checkpoint's training FPS. Logs include prefix/estimated/actual delay plus
 In the GPU's OpenPI environment:
 
 ```bash
-uv run pytest -q src/openpi/models/rtc_test.py \
-  src/openpi/models/rtc_sampler_test.py src/openpi/policies/rtc_policy_test.py
+uv run --extra g2 pytest -q src/openpi/models/rtc_test.py \
+  src/openpi/models/rtc_sampler_test.py src/openpi/adapters/g2/tests/rtc_policy_test.py
 ```
 
 These verify the guidance Jacobian and sign, JAX JIT integration through the
@@ -99,3 +100,8 @@ normalization, and padding masks without loading a full checkpoint. Then run
 the server warmup and client smoke/fake checks using the actual checkpoint.
 
 Algorithm reference: [Physical Intelligence RTC implementation](https://github.com/Physical-Intelligence/real-time-chunking-kinetix/blob/main/src/model.py).
+
+Additional control quantities, histories, references, and target offsets use the explicit
+`g2.openpi.v1` adapter protocol; see [Policy configuration](POLICY_CONFIG.md).
+RTC prefixes always use that control quantity's full wire width and canonical coordinates,
+and are encoded without applying training-label time offsets or subsampling again.

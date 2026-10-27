@@ -13,14 +13,12 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
-import openpi.g2_lerobot_contract as g2_contract
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
-import openpi.policies.g2_policy as g2_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -67,6 +65,8 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Optional dataset construction hook. Adapters own sampling and format conversion.
+    dataset_factory: tyro.conf.Suppress[Any | None] = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -429,7 +429,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
 class LeRobotDROIDDataConfig(DataConfigFactory):
     """
     Example data config for custom DROID dataset in LeRobot format.
-    To convert your custom DROID dataset (<10s of hours) to LeRobot format, see examples/droid/convert_droid_data_to_lerobot.py
+    To convert your custom DROID dataset (<10s of hours) to LeRobot format, see the upstream OpenPI DROID conversion example
     """
 
     @override
@@ -461,85 +461,6 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class LeRobotG2DataConfig(DataConfigFactory):
-    """G2 wholebody LeRobot v2.1 (pose + 3 cameras) → OpenPI π₀.₅.
-
-    Disk keys come from ``openpi.g2_lerobot_contract.G2`` (a copy of
-    wholebody ``shared/g2_lerobot_contract.py``). Measured vectors are
-    ``state.joint`` / ``state.pose``; commands are ``action.joint`` /
-    ``action.pose``. Camera videos stay ``observation.images.*``.
-    Put the dataset tree under ``$HF_LEROBOT_HOME/<repo_id>/`` (scripts/g2 sets
-    ``HF_LEROBOT_HOME`` to ``~/work/openpi/data``).
-
-    When ``use_delta_actions=True`` (default), proprio ``observation/state`` is
-    **state.pose** so ``DeltaActions`` computes chunk-relative pose:
-    ``action.pose[t:t+T] - state.pose[t]``. Grippers stay absolute.
-    Do **not** feed the QA residual column as actions.
-    """
-
-    # Chunk-relative EE pose (OpenPI DeltaActions). False → absolute pose labels; state=joints.
-    use_delta_actions: bool = True
-    arm: str = "both"
-    # None selects the head and both/selected wrist cameras. Explicit subsets require the head.
-    cameras: tuple[str, ...] | None = None
-
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # Delta path needs measured pose as state (same dim/layout as pose actions).
-        # Absolute path uses joint proprio. Left-hand keys are the π₀.₅ input contract.
-        g2_policy.arm_slice(self.arm, 20)
-        if self.arm != "both" and not self.use_delta_actions:
-            raise ValueError("single-arm G2 currently requires use_delta_actions=True")
-        g2 = g2_contract.G2
-        cams = g2.cameras
-        selected = g2_policy.selected_camera_ids(self.arm, self.cameras)
-        state_key = g2.columns.proprio_key(delta_actions=self.use_delta_actions)
-        repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "observation/image": cams.feature_key(cams.head),
-                        "observation/wrist_image_left": cams.feature_key(cams.hand_left),
-                        "observation/wrist_image_right": cams.feature_key(cams.hand_right),
-                        "observation/state": state_key,
-                        "actions": g2.columns.action_pose,
-                        "prompt": "prompt",
-                    }
-                )
-            ]
-        )
-
-        mapping = dict(repack_transform.inputs[0].structure)
-        for side, camera in (("left", cams.hand_left), ("right", cams.hand_right)):
-            if camera not in selected:
-                mapping.pop(f"observation/wrist_image_{side}")
-        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(mapping)])
-
-        data_transforms = _transforms.Group(
-            inputs=[g2_policy.G2Inputs(model_type=model_config.model_type, arm=self.arm, cameras=selected)],
-            outputs=[g2_policy.G2Outputs(action_dim=20 if self.arm == "both" else 10)],
-        )
-
-        if self.use_delta_actions:
-            # L/R: xyz+rot6d delta; gripper absolute. Mask follows pose layout.
-            delta_action_mask = g2.pose.delta_mask()[g2_policy.arm_slice(self.arm, 20)]
-            data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActions(delta_action_mask)],
-                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-            )
-
-        model_transforms = ModelTransformFactory()(model_config)
-
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-            action_sequence_keys=(g2.columns.action_pose,),
         )
 
 
@@ -609,8 +530,8 @@ class TrainConfig:
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
 
-    # Resolved YAML settings captured with G2 checkpoints, including data/model semantics.
-    g2_training_config: tyro.conf.Suppress[dict[str, Any] | None] = None
+    # Optional adapter-provided text files saved with each checkpoint and experiment.
+    checkpoint_assets: tyro.conf.Suppress[dict[str, str]] = dataclasses.field(default_factory=dict)
 
     # If the value is greater than 1, FSDP will be enabled and shard across number of specified devices; overall
     # device memory will be reduced but training could potentially be slower.
@@ -849,7 +770,7 @@ _CONFIGS = [
     # Fine-tuning Aloha configs.
     #
     # This is a test config that is used to illustate how train on a custom LeRobot dataset.
-    # For instructions on how to convert and train on your own Aloha dataset see examples/aloha_real/README.md
+    # ALOHA data-conversion instructions are maintained in the upstream OpenPI examples.
     TrainConfig(
         name="pi0_aloha_pen_uncap",
         model=pi0_config.Pi0Config(),
@@ -979,7 +900,7 @@ _CONFIGS = [
     TrainConfig(
         # This config is for fine-tuning pi05-DROID on a custom (smaller) DROID dataset.
         # Here, we use LeRobot data format (like for all other fine-tuning examples)
-        # To convert your custom DROID dataset (<10s of hours) to LeRobot format, see examples/droid/convert_droid_data_to_lerobot.py
+        # To convert your custom DROID dataset (<10s of hours) to LeRobot format, see the upstream OpenPI DROID conversion example
         name="pi05_droid_finetune",
         model=pi0_config.Pi0Config(
             pi05=True,
@@ -1013,68 +934,6 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
-    ),
-    #
-    # G2 wholebody (VR pose) — parallel to LeRobot/G2_pi PEFT path. Needs LeRobot v2.1 under
-    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md
-    #
-    TrainConfig(
-        name="pi05_g2_vr",
-        # discrete_state_input 不写则跟随 pi05：True，当前 EE 打进 prompt。
-        # action_horizon 与 Pi0Config 默认一致（50）。30 Hz 下约 1.7 s。
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
-        data=LeRobotG2DataConfig(
-            repo_id="g2_vr_lerobot_v21",
-            base_config=DataConfig(prompt_from_task=True),
-            use_delta_actions=True,
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=30_000,
-        # Single 4090: start small; raise if VRAM allows.
-        batch_size=8,
-        wandb_enabled=True,
-        project_name="G2_openpi",
-        # Handshake fields, plus action_dim for in-process RTC. G2PolicyServer drops action_dim.
-        policy_metadata={
-            "backend": "openpi",
-            "robot": "g2",
-            "action_dim": g2_policy.G2_ACTION_DIM,
-            "action_horizon": 50,
-            "policy_hz": 30.0,
-        },
-    ),
-    TrainConfig(
-        name="pi05_g2_vr_low_mem",
-        # LoRA variants for smoke / 24GB cards (mirrors pi0_libero_low_mem_finetune pattern).
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            action_horizon=50,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ),
-        data=LeRobotG2DataConfig(
-            repo_id="g2_vr_lerobot_v21",
-            base_config=DataConfig(prompt_from_task=True),
-            use_delta_actions=True,
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        freeze_filter=pi0_config.Pi0Config(
-            pi05=True,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ).get_freeze_filter(),
-        ema_decay=None,
-        num_train_steps=30_000,
-        batch_size=2,
-        wandb_enabled=True,
-        project_name="G2_openpi",
-        policy_metadata={
-            "backend": "openpi",
-            "robot": "g2",
-            "action_dim": g2_policy.G2_ACTION_DIM,
-            "action_horizon": 50,
-            "policy_hz": 30.0,
-        },
     ),
     #
     # Debugging configs.
@@ -1116,17 +975,6 @@ _CONFIGS = [
     *polaris_config.get_polaris_configs(),
 ]
 
-# Separate names isolate norm assets and checkpoints between arm selections.
-_CONFIGS.extend([
-    dataclasses.replace(
-        config,
-        name=f"{config.name}_{arm}",
-        data=dataclasses.replace(config.data, arm=arm),
-    )
-    for config in tuple(_CONFIGS)
-    if config.name in ("pi05_g2_vr", "pi05_g2_vr_low_mem")
-    for arm in ("left", "right")
-])
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

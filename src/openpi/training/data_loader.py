@@ -137,6 +137,9 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
+    if data_config.dataset_factory is not None:
+        return data_config.dataset_factory(data_config, action_horizon, model_config)
+
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
@@ -350,7 +353,7 @@ def create_rlds_data_loader(
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create an RLDS data loader for training.
 
-    Note: This data loader requires some extra dependencies -- see examples/droid/README_train.md
+    Note: This data loader requires some extra dependencies -- see the upstream OpenPI DROID training documentation
 
     Args:
         data_config: The data configuration.

@@ -31,7 +31,6 @@ datasets/**/*.hdf5
 datasets/**/*.h5
 datasets/**/*.rlds/
 experiments/
-examples/*/experiments/
 runs/
 outputs/
 results/
@@ -45,7 +44,6 @@ robot_videos/
 *.mkv
 *.webm
 *.gif
-!examples/libero/velocity_control_constant.mp4
 
 # Simulator / runtime logs
 MUJOCO_LOG.TXT
