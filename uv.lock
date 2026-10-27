@@ -1130,11 +1130,16 @@ http = [
 
 [[package]]
 name = "g2-policy-protocol"
-version = "0.4.1"
+version = "0.5.0"
 source = { directory = "../g2-policy-protocol" }
 dependencies = [
     { name = "msgpack" },
     { name = "numpy" },
+]
+
+[package.optional-dependencies]
+geometry = [
+    { name = "scipy" },
 ]
 
 [package.metadata]
@@ -1142,9 +1147,10 @@ requires-dist = [
     { name = "msgpack", specifier = ">=1.0" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pillow", marker = "extra == 'tools'", specifier = ">=9" },
+    { name = "scipy", marker = "extra == 'geometry'", specifier = ">=1.11" },
     { name = "websockets", marker = "extra == 'tools'", specifier = ">=12" },
 ]
-provides-extras = ["tools"]
+provides-extras = ["geometry", "tools"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3146,7 +3152,7 @@ dependencies = [
 
 [package.optional-dependencies]
 g2 = [
-    { name = "g2-policy-protocol" },
+    { name = "g2-policy-protocol", extra = ["geometry"] },
 ]
 
 [package.dev-dependencies]
@@ -3177,7 +3183,7 @@ requires-dist = [
     { name = "flatbuffers", specifier = ">=24.3.25" },
     { name = "flax", specifier = "==0.10.2" },
     { name = "fsspec", extras = ["gcs"], specifier = ">=2024.6.0" },
-    { name = "g2-policy-protocol", marker = "extra == 'g2'", directory = "../g2-policy-protocol" },
+    { name = "g2-policy-protocol", extras = ["geometry"], marker = "extra == 'g2'", directory = "../g2-policy-protocol" },
     { name = "gym-aloha", specifier = ">=0.1.1" },
     { name = "imageio", specifier = ">=2.36.1" },
     { name = "jax", extras = ["cuda12"], specifier = "==0.5.3" },

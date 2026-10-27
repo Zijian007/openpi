@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "train"))
 
 from train_pipeline import _check_dataset
 from train_pipeline import _norm_signature
@@ -66,12 +66,10 @@ def test_rejects_typo_and_duplicate_yaml_keys(tmp_path, text):
 
 def test_right_arm_and_resume():
     settings = resolve(["--arm", "right", "--resume", "--overwrite"])
-    assert g2_config.config_name(settings) == "pi05_g2_vr_low_mem_right"
+    assert g2_config.preset_name(settings) == "pi05_g2_vr_low_mem_right"
     assert g2_config.selected_cameras(settings) == ("head_color", "hand_right_color")
     assert settings["checkpoints"]["resume"]
     assert not settings["checkpoints"]["overwrite"]
-    with pytest.raises(ValueError, match="disagrees"):
-        resolve(["--arm", "left", "--config-name", "pi05_g2_vr_right"])
 
 
 def test_runtime_environment_overrides_yaml():
@@ -102,7 +100,19 @@ def test_shell_smoke_entry_uses_yaml_not_old_shell_defaults(tmp_path):
     entry = root / "scripts/g2/train/train_smoke.sh"
     entry.parent.mkdir(parents=True)
     entry.write_text((g2_config.PROJECT_ROOT / "scripts/g2/train/train_smoke.sh").read_text())
-    (root / "scripts/g2/_env.sh").write_text("")
+    (root / "scripts/g2/_env.sh").write_text(
+        "\n".join(
+            [
+                f'G2_OPENPI_PROJECT_ROOT="{root}"',
+                "g2_openpi_no_launcher_args() { [[ $# -eq 0 ]] || exit 2; }",
+                "g2_openpi_run_train() {",
+                f'  exec "{root}/.venv/bin/python" scripts/g2/train/train_pipeline.py '
+                '--config scripts/g2/train/config.yaml "$@"',
+                "}",
+                "",
+            ]
+        )
+    )
     interpreter = root / ".venv/bin/python"
     interpreter.parent.mkdir(parents=True)
     interpreter.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
@@ -118,7 +128,7 @@ def test_shell_smoke_entry_uses_yaml_not_old_shell_defaults(tmp_path):
     assert json.loads(result.stdout) == [
         "scripts/g2/train/train_pipeline.py",
         "--config",
-        str(root / "scripts/g2/train/config.yaml"),
+        "scripts/g2/train/config.yaml",
         "--smoke",
     ]
 
@@ -141,14 +151,14 @@ def test_dataset_check_uses_cli_resolved_path_and_camera_selection(tmp_path):
 
 def test_changed_action_settings_invalidate_auto_norm(tmp_path):
     settings = resolve(["--assets-base-dir", str(tmp_path)])
-    norm = tmp_path / g2_config.config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
+    norm = tmp_path / g2_config.preset_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
     norm.parent.mkdir(parents=True)
     norm.write_text("{}")
     signature = norm.with_name("g2_norm_config.yaml")
     signature.write_text(yaml.safe_dump(_norm_signature(settings)))
     out = StringIO()
     with patch.dict(os.environ, {}, clear=True), redirect_stdout(out):
-        main(["--dry-run", "--assets-base-dir", str(tmp_path), "--action-mode", "absolute"])
+        main(["--dry-run", "--assets-base-dir", str(tmp_path), "--action-representation", "absolute"])
     assert "skip=False" in out.getvalue()
 
 
@@ -211,11 +221,11 @@ def test_absolute_eef_state_only_requires_pose_column(tmp_path):
 def test_state_changes_invalidate_norm_cache_but_execution_length_does_not(tmp_path):
     args = ["--assets-base-dir", str(tmp_path), "--action-representation", "absolute"]
     settings = resolve(args)
-    norm = tmp_path / g2_config.config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
+    norm = tmp_path / g2_config.preset_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
     norm.parent.mkdir(parents=True)
     norm.write_text("{}")
     norm.with_name("g2_norm_config.yaml").write_text(yaml.safe_dump(_norm_signature(settings)))
-    for extra, expected in ((["--execution-steps", "10"], "skip=True"), (["--state-space", "joint"], "skip=False")):
+    for extra, expected in ((["--log-interval", "10"], "skip=True"), (["--state-space", "joint"], "skip=False")):
         out = StringIO()
         with patch.dict(os.environ, {}, clear=True), redirect_stdout(out):
             main([*args, *extra, "--dry-run"])
@@ -233,7 +243,7 @@ def test_resume_preserves_semantics_and_allows_execution_override(tmp_path, lega
         "--skip-norm",
     ]
     settings = resolve(args)
-    root = tmp_path / "checkpoints" / g2_config.config_name(settings) / settings["experiment"]["name"]
+    root = tmp_path / "checkpoints" / g2_config.preset_name(settings) / settings["experiment"]["name"]
     root.mkdir(parents=True)
     # Store resolved absolute paths just as train.py does.
     saved = settings.copy()
@@ -244,16 +254,16 @@ def test_resume_preserves_semantics_and_allows_execution_override(tmp_path, lega
         saved.pop("schema_version")
         policy = saved.pop("policy")
         saved["data"].update(action_space="pose", action_mode="relative")
-        saved["model"]["action_horizon"] = policy["timing"]["prediction_steps"]
+        saved["model"]["action_horizon"] = policy["timing"]["action_horizon"]
     (root / g2_config.CHECKPOINT_CONFIG).write_text(yaml.safe_dump({"settings": saved, "extra_args": []}))
-    norm = tmp_path / "assets" / g2_config.config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
+    norm = tmp_path / "assets" / g2_config.preset_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
     norm.parent.mkdir(parents=True)
     norm.write_text("{}")
     with patch("train_pipeline._check_dataset"), patch("train_pipeline._run_command") as run:
         with patch.dict(os.environ, {}, clear=True):
-            main([*args, "--execution-steps", "10"])
+            main(args)
         assert run.call_count == 1  # mocked worker, no actual training
     with patch("train_pipeline._check_dataset"), patch("train_pipeline._run_command") as run:
         with patch.dict(os.environ, {}, clear=True), pytest.raises(ValueError, match="policy semantics"):
-            main([*args, "--prediction-steps", "16"])
+            main([*args, "--action-horizon", "16"])
         run.assert_not_called()

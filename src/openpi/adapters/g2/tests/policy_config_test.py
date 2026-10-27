@@ -13,7 +13,7 @@ def legacy_settings(mode="relative"):
     settings.pop("schema_version")
     policy = settings.pop("policy")
     settings["data"].update(action_space="pose", action_mode=mode)
-    settings["model"]["action_horizon"] = policy["timing"]["prediction_steps"]
+    settings["model"]["action_horizon"] = policy["timing"]["action_horizon"]
     return settings
 
 
@@ -36,20 +36,24 @@ def test_partial_legacy_yaml_and_nested_v2_yaml(tmp_path):
     settings = g2_config.resolve_settings(g2_config.load_settings(path), {})
     assert settings["policy"]["state"]["space"] == "joint"
     assert settings["policy"]["action"]["representation"] == "absolute"
-    assert settings["policy"]["timing"]["prediction_steps"] == 16
-    path.write_text("policy:\n  action:\n    representation: absolute\n  timing:\n    prediction_steps: 16\n")
+    assert settings["policy"]["timing"]["action_horizon"] == 16
+    path.write_text("policy:\n  action:\n    representation: absolute\n  timing:\n    action_horizon: 16\n")
     settings = g2_config.resolve_settings(g2_config.load_settings(path), {})
     assert settings["policy"]["state"]["space"] == "eef"
     assert settings["policy"]["action"]["relative_to"] is None
     assert settings["policy"]["action"]["delta_scope"] is None
     assert settings["policy"]["timing"]["sample_hz"] == 30.0
+    path.write_text("policy:\n  timing:\n    prediction_steps: 12\n")
+    settings = g2_config.resolve_settings(g2_config.load_settings(path), {})
+    assert settings["policy"]["timing"]["action_horizon"] == 12
+    assert "prediction_steps" not in settings["policy"]["timing"]
 
 
 @pytest.mark.parametrize(
     "text",
     [
         "policy:\n  state:\n    sapce: joint\n",
-        "policy:\n  timing:\n    prediction_steps: 16\n    prediction_steps: 20\n",
+        "policy:\n  timing:\n    action_horizon: 16\n    action_horizon: 20\n",
         "policy:\n  state: joint\n",
         "policy: null\n",
         "policy:\n  action: null\n",
@@ -91,7 +95,7 @@ def test_extended_semantics_are_supported(path, value):
         ("sample_hz", float("nan")),
         ("sample_hz", float("inf")),
         ("history_steps", True),
-        ("prediction_steps", 0),
+        ("action_horizon", 0),
         ("execution_steps", 51),
         ("execution_steps", True),
         ("target_offset_steps", -1),
@@ -168,13 +172,6 @@ def test_state_action_encoding_round_trip(tmp_path, monkeypatch, arm, space, rep
     np.testing.assert_array_equal(actions, original)
 
 
-def test_legacy_and_v2_cli_aliases_cannot_disagree():
-    for overrides in (
-        {"action_mode": "relative", "action_representation": "absolute"},
-        {"action_horizon": 16, "prediction_steps": 50},
-    ):
-        with pytest.raises(ValueError, match="disagrees"):
-            g2_config.resolve_settings(g2_config.load_settings(), overrides)
 
 
 def test_derived_preview_is_consistent_with_prediction_and_state_choice():
@@ -183,7 +180,7 @@ def test_derived_preview_is_consistent_with_prediction_and_state_choice():
         {
             "state_space": "joint",
             "action_representation": "absolute",
-            "prediction_steps": 16,
+            "action_horizon": 16,
         },
     )
     preview = g2_config.describe_policy(settings)

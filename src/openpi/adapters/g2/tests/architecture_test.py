@@ -24,7 +24,7 @@ def test_native_modules_do_not_import_robot_adapters():
             forbidden.extend(
                 (str(path), module)
                 for module in modules
-                if module.startswith(("openpi.adapters", "g2_policy_protocol"))
+                if module.startswith(("openpi.adapters", "g2_policy_protocol", "g2_policy_tools"))
             )
     assert forbidden == []
 
@@ -37,7 +37,7 @@ def test_native_entrypoints_import_without_g2_dependencies():
 
         class BlockAdapters(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
-                if fullname.startswith(("openpi.adapters", "g2_policy_protocol")):
+                if fullname.startswith(("openpi.adapters", "g2_policy_protocol", "g2_policy_tools")):
                     raise AssertionError(f"Native OpenPI tried to import {fullname}")
 
         sys.meta_path.insert(0, BlockAdapters())
@@ -67,4 +67,4 @@ def test_native_entrypoints_import_without_g2_dependencies():
 def test_protocol_is_an_optional_dependency():
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())["project"]
     assert all(not dependency.startswith("g2-policy-protocol") for dependency in project["dependencies"])
-    assert "g2-policy-protocol==0.4.1" in project["optional-dependencies"]["g2"]
+    assert "g2-policy-protocol[geometry]==0.5.0" in project["optional-dependencies"]["g2"]

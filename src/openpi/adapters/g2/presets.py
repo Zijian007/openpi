@@ -2,17 +2,19 @@
 
 import dataclasses
 
-from openpi.adapters.g2 import transforms as g2_policy
+from openpi.adapters.g2 import config as g2_config
+from openpi.adapters.g2.transforms import G2_ACTION_DIM
 from openpi.adapters.g2.data import LeRobotG2DataConfig
 from openpi.models import pi0_config
 from openpi.training import weight_loaders
 from openpi.training.config import DataConfig
 from openpi.training.config import TrainConfig
 
+_REPO_ID = g2_config.read_yaml(g2_config.DEFAULT_CONFIG)["data"]["repo_id"]
+
 _CONFIGS = [
     #
-    # G2 wholebody (VR pose) — parallel to LeRobot/G2_pi PEFT path. Needs LeRobot v2.1 under
-    # $HF_LEROBOT_HOME/g2_vr_lerobot_v21 (see scripts/g2/). Docs: g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md
+    # G2 wholebody (VR pose). Dataset id comes from scripts/g2/train/config.yaml.
     #
     TrainConfig(
         name="pi05_g2_vr",
@@ -20,7 +22,7 @@ _CONFIGS = [
         # 50 action steps at 30 Hz cover approximately 1.7 seconds.
         model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
         data=LeRobotG2DataConfig(
-            repo_id="g2_vr_lerobot_v21",
+            repo_id=_REPO_ID,
             base_config=DataConfig(prompt_from_task=True),
             use_delta_actions=True,
         ),
@@ -34,7 +36,7 @@ _CONFIGS = [
         policy_metadata={
             "backend": "openpi",
             "robot": "g2",
-            "action_dim": g2_policy.G2_ACTION_DIM,
+            "action_dim": G2_ACTION_DIM,
             "action_horizon": 50,
             "policy_hz": 30.0,
         },
@@ -49,7 +51,7 @@ _CONFIGS = [
             action_expert_variant="gemma_300m_lora",
         ),
         data=LeRobotG2DataConfig(
-            repo_id="g2_vr_lerobot_v21",
+            repo_id=_REPO_ID,
             base_config=DataConfig(prompt_from_task=True),
             use_delta_actions=True,
         ),
@@ -67,7 +69,7 @@ _CONFIGS = [
         policy_metadata={
             "backend": "openpi",
             "robot": "g2",
-            "action_dim": g2_policy.G2_ACTION_DIM,
+            "action_dim": G2_ACTION_DIM,
             "action_horizon": 50,
             "policy_hz": 30.0,
         },

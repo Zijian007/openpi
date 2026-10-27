@@ -10,10 +10,11 @@ Use the same config and step directory as ordinary inference:
 
 ```bash
 bash scripts/g2/deploy/serve_policy.sh \
-  --config-name pi05_g2_vr_low_mem \
-  --policy-dir /path/to/existing/checkpoint/step \
+  --policy.dir /path/to/existing/checkpoint/step \
   --port 8001 --rtc --rtc-soft-overlap-steps 5 --rtc-guidance 10
 ```
+
+Checkpoint semantics come from `assets/g2_train_config.yaml`. `deploy/config.yaml` already sets port 8001 and RTC; the flags above only override that file. Checkpoints without a snapshot still need `legacy_preset` in the deploy YAML.
 
 Warmup runs both ordinary and guided inference before opening the port. Metadata
 advertises `rtc_supported`, `rtc_protocol`, `rtc_soft_overlap_steps`,
@@ -71,13 +72,14 @@ and only that many new-chunk steps are discarded. The initial chunk retains its
 prefix until execution begins. If committed actions or the prediction horizon
 expire, inference fails and the runtime applies its existing halt behavior.
 
-Client `replan_interval_steps` independently sets the nominal interval between
-observation starts. With chunk 50 and interval 13, refill triggers at 37 remaining
-steps; elapsed steps trimmed on arrival count toward the interval. At 30 Hz this
-is about 0.433 s. If inference takes longer, request the next chunk immediately
-after arrival; there is only one request in flight. The scheduler validates the
-interval against the server-resolved chunk size. Null uses `chunk_refill_ratio`;
-an explicit interval overrides the ratio. Neither setting changes model horizon.
+Client `replan_after_steps` independently sets the nominal interval between
+observation starts. With execution_steps 50 and replan_after_steps 13, refill
+triggers at 37 remaining steps; elapsed steps trimmed on arrival count toward
+the interval. At 30 Hz this is about 0.433 s. If inference takes longer, request
+the next chunk immediately after arrival; there is only one request in flight.
+The scheduler validates the interval against the resolved execution_steps.
+Omitting `replan_after_steps` refills at half of execution_steps. Neither
+setting changes model horizon.
 
 The wholebody baseline uses interval 13, delay floor 13 and bridge 0.08 s; the
 server defaults to soft overlap 5 and guidance 10. These are separate controls,
@@ -101,7 +103,7 @@ the server warmup and client smoke/fake checks using the actual checkpoint.
 
 Algorithm reference: [Physical Intelligence RTC implementation](https://github.com/Physical-Intelligence/real-time-chunking-kinetix/blob/main/src/model.py).
 
-Additional control quantities, histories, references, and target offsets use the explicit
-`g2.openpi.v1` adapter protocol; see [Policy configuration](POLICY_CONFIG.md).
+Additional control quantities, histories, references, and target offsets use
+`g2.policy.v3`; see [Policy configuration](POLICY_CONFIG.md).
 RTC prefixes always use that control quantity's full wire width and canonical coordinates,
 and are encoded without applying training-label time offsets or subsampling again.

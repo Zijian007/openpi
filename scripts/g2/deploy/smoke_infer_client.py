@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""GPU-local smoke: connect to OpenPI serve_policy and run fake G2 observations.
+"""GPU-local smoke: connect to a running G2 serve_policy and send fake observations.
 
 Prerequisite (another terminal)::
 
-    bash scripts/g2/deploy/serve_policy.sh \\
-      --config-name pi05_g2_vr_low_mem \\
-      --policy-dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
+    bash scripts/g2/deploy/serve_policy.sh
+    # or override the YAML checkpoint:
+    bash scripts/g2/deploy/serve_policy.sh --policy.dir checkpoints/<config>/<exp>/<step>
 
 Then::
 
-    uv run --extra g2 scripts/g2/deploy/smoke_infer_client.py
-    # or: bash scripts/g2/deploy/smoke_infer_client.sh
+    bash scripts/g2/deploy/smoke_infer_client.sh
 
-Uses g2.policy.v2, identical to G2_pi and the G2 robot client.
+Follows the server handshake (g2.policy.v3 when the checkpoint has a training snapshot).
 """
 
 from __future__ import annotations
@@ -25,24 +24,25 @@ import urllib.request
 
 from g2_policy_protocol import codec
 from g2_policy_protocol import protocol
+from g2_policy_protocol.samples import synthetic_context
 import numpy as np
 import tyro
 from websockets.sync.client import connect
 
-from openpi.adapters.g2 import transforms as g2_policy
+from openpi.adapters.g2.transforms import G2_ACTION_DIM
 
 logger = logging.getLogger("g2.smoke_infer")
 
 # G2 TrainConfig: action_horizon=50; G2Outputs truncates padded 32 → 20.
 EXPECTED_HORIZON = 50
-EXPECTED_ACTION_DIM = g2_policy.G2_ACTION_DIM
+EXPECTED_ACTION_DIM = G2_ACTION_DIM
 
 
 @dataclasses.dataclass
 class Args:
     host: str = "127.0.0.1"
-    port: int = 8000
-    """Must match serve_policy --port (default 8000; use 8001 if LeRobot also on :8000)."""
+    port: int = 8001
+    """Must match deploy/config.yaml server.port."""
     prompt: str = "Pick up the drink and put it in the box"
     num_infer: int = 3
     """How many infer round-trips. With serve_policy.sh warmup, all should be steady (~100ms)."""
@@ -86,7 +86,7 @@ def _wait_healthz(host: str, port: int, timeout_s: float) -> None:
 
 def _check_actions(actions: np.ndarray, *, step: int, metadata: dict | None = None) -> None:
     metadata = metadata or {}
-    expected_dim = metadata.get("extensions", {}).get("wire_action_dim", EXPECTED_ACTION_DIM)
+    expected_dim = protocol.action_contract(metadata)["dim"]
     expected_horizon = metadata.get("action_horizon", EXPECTED_HORIZON)
     arr = np.asarray(actions, dtype=np.float32)
     if arr.shape != (expected_horizon, expected_dim) or not np.isfinite(arr).all():
@@ -97,10 +97,7 @@ def _check_actions(actions: np.ndarray, *, step: int, metadata: dict | None = No
         "step %d: actions=%s quantity=%s first=%s",
         step,
         arr.shape,
-        metadata.get("extensions", {})
-        .get("policy_contract", {})
-        .get("action", {})
-        .get("control_quantity", "pose_target"),
+        protocol.action_contract(metadata)["control_quantity"],
         np.array2string(arr[0, :3], precision=3),
     )
 
@@ -119,9 +116,7 @@ def main(args: Args) -> int:
 
     with connect(f"ws://{args.host}:{args.port}", compression=None, max_size=None) as client:
         meta = codec.loads(client.recv(), encoding="msgpack")
-        advanced = meta.get("protocol") == "g2.openpi.v1"
-        if not advanced:
-            protocol.validate_metadata(meta)
+        protocol.validate_metadata(meta)
         logger.info("server metadata: %s", meta)
         for i in range(args.num_infer):
             native = _make_obs(args)
@@ -140,47 +135,20 @@ def main(args: Args) -> int:
                     key: cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))[1].tobytes()
                     for key, image in images.items()
                 }
+            context = None
+            if protocol.is_v3(meta):
+                context = synthetic_context(dict(state=native["observation/state"],
+                                                  joint_state=np.zeros(16, np.float32),
+                                                  images={key: native[mapping[key]] for key in meta["required_cameras"]}), meta)
             request = protocol.build_request(
-                request_id=i,
-                prompt=args.prompt,
-                state=native["observation/state"],
-                images=images,
-                metadata=meta,
-                joint_state=np.zeros(16, np.float32) if meta["requires_joint_state"] else None,
+                request_id=i, prompt=args.prompt, state=native["observation/state"], images=images,
+                metadata=meta, joint_state=np.zeros(16, np.float32) if meta["requires_joint_state"] else None,
+                observation_time_ns=time.monotonic_ns() if protocol.is_v3(meta) else None, context=context,
             )
-            if advanced:
-                request["protocol"] = "g2.openpi.v1"
-                settings = meta["extensions"]["policy_contract"]
-                length = settings["timing"]["history_steps"]
-                pose = native["observation/state"]
-                context = {
-                    "command_pose": pose,
-                    "previous_command_pose": pose,
-                    "object_pose": pose,
-                    "object_joint": np.zeros(16, np.float32),
-                    "base_to_parent": np.eye(4, dtype=np.float32),
-                }
-                if length > 1:
-                    context.update(
-                        pose_history=np.tile(pose, (length, 1)),
-                        joint_history=np.zeros((length, 16), np.float32),
-                        image_history={
-                            key: np.tile(native[mapping[key]][None], (length, 1, 1, 1))
-                            for key in meta["required_cameras"]
-                        },
-                    )
-                request["context"] = context
             t0 = time.monotonic()
             client.send(codec.dumps(request))
             out = codec.loads(client.recv())
-            if advanced:
-                if out["type"] == protocol.ERROR_TYPE:
-                    raise RuntimeError(out["message"])
-                if out.get("protocol") != "g2.openpi.v1" or out["request_id"] != i:
-                    raise ValueError("Invalid advanced response")
-                actions = out["actions"]
-            else:
-                actions = protocol.parse_response(out, request_id=i)
+            actions = protocol.parse_response(out, request_id=i, metadata=meta)
             _check_actions(actions, step=i, metadata=meta)
             logger.info(
                 "step %d: roundtrip=%.1f ms timing=%s", i, (time.monotonic() - t0) * 1000, out.get("server_timing", {})
@@ -190,11 +158,11 @@ def main(args: Args) -> int:
         "OK: %d infer(s) passed (horizon=%d, action_dim>=%d)",
         args.num_infer,
         meta["action_horizon"],
-        meta.get("extensions", {}).get("wire_action_dim", EXPECTED_ACTION_DIM),
+        protocol.action_contract(meta)["dim"],
     )
     print(
         f"OK: {args.num_infer} infer(s) passed "
-        f"(horizon={meta['action_horizon']}, action_dim={meta.get('extensions', {}).get('wire_action_dim', EXPECTED_ACTION_DIM)})",
+        f"(horizon={meta['action_horizon']}, action_dim={protocol.action_contract(meta)['dim']})",
         flush=True,
     )
     return 0

@@ -61,7 +61,7 @@ def test_transport_warmup_finishes_before_binding_port():
 
     with (
         patch("openpi.adapters.g2.server._warmup_jpeg_transport", side_effect=lambda: events.append("warmup")),
-        patch("openpi.serving.websocket_policy_server._server.serve", side_effect=bind),
+        patch("websockets.asyncio.server.serve", side_effect=bind),
     ):
         asyncio.run(G2PolicyServer(None).run())
     assert events == ["warmup", "bind", "listen", "serve"]
@@ -173,8 +173,8 @@ def test_real_advanced_server_transports_history_and_typed_joint_actions(encodin
             f"ws://127.0.0.1:{port}/?encoding={encoding}", compression=None, open_timeout=3, max_size=None
         ) as ws:
             meta = codec.loads(ws.recv(timeout=3), encoding=encoding)
-            assert meta["protocol"] == "g2.openpi.v1"
-            assert len(meta["extensions"]["action_units"]) == 16
+            assert meta["protocol"] == "g2.policy.v3"
+            assert len(meta["action_spec"]["units"]) == 16
             request = protocol.build_request(
                 request_id=1,
                 prompt="tea",
@@ -182,9 +182,7 @@ def test_real_advanced_server_transports_history_and_typed_joint_actions(encodin
                 joint_state=np.zeros(16, np.float32),
                 images={"head_color": np.zeros((224, 224, 3), np.uint8)},
                 metadata=meta,
-            )
-            request.update(
-                protocol="g2.openpi.v1",
+                observation_time_ns=1000000000,
                 context={
                     "pose_history": np.zeros((2, 20), np.float32),
                     "joint_history": np.zeros((2, 16), np.float32),
@@ -193,8 +191,8 @@ def test_real_advanced_server_transports_history_and_typed_joint_actions(encodin
             )
             ws.send(codec.dumps(request, encoding=encoding))
             result = codec.loads(ws.recv(timeout=3), encoding=encoding)
-            assert result["protocol"] == "g2.openpi.v1"
-            assert result["control_quantity"] == "joint_position"
+            protocol.parse_response(result, request_id=1, metadata=meta)
+            assert meta["action_spec"]["control_quantity"] == "joint_position"
             assert result["actions"].shape == (3, 16)
 
     async def run():

@@ -48,3 +48,15 @@ def test_head_only_camera_config_masks_both_wrists_without_reading_them():
     assert not out["image_mask"]["right_wrist_0_rgb"]
     assert not out["image"]["left_wrist_0_rgb"].any()
     assert not out["image"]["right_wrist_0_rgb"].any()
+
+
+def test_wrist_only_camera_config_masks_head_without_reading_it():
+    data = {
+        "observation/state": np.zeros(20, np.float32),
+        "observation/wrist_image_right": np.ones((224, 224, 3), np.uint8),
+    }
+    out = prepare_inputs(data, "right", ("hand_right_color",))
+    assert not out["image_mask"]["base_0_rgb"]
+    assert not out["image_mask"]["left_wrist_0_rgb"]
+    assert out["image_mask"]["right_wrist_0_rgb"]
+    assert not out["image"]["base_0_rgb"].any()

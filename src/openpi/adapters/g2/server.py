@@ -3,14 +3,13 @@
 import logging
 import time
 
-from g2_policy_protocol import codec
 from g2_policy_protocol import protocol
+from g2_policy_protocol.server import PolicyServer
 import numpy as np
 from openpi_client import msgpack_numpy
-import websockets
 
-from openpi.adapters.g2.transforms import action_dimensions
-from openpi.serving.websocket_policy_server import WebsocketPolicyServer
+from openpi.adapters.g2.config import needs_joint_state
+from openpi.adapters.g2.config import needs_measured_pose
 
 try:
     import cv2
@@ -79,241 +78,142 @@ def _decode_jpeg_images(obs: object) -> None:
 
 
 def connection_metadata(policy_metadata):
-    """Build handshake fields and explicit adapter capabilities from the checkpoint.
-
-    ``action_dim`` and ``model_action_dim`` stay on the policy for RTC prefix width.
-    Pose clients receive (T, 20); the extended protocol declares other control widths.
-    """
+    """Translate checkpoint semantics into shared wire capabilities."""
     native = dict(policy_metadata or {})
     arm = native.get("arm", "both")
-    required = list(native.get("required_cameras") or protocol.cameras_for_arm(arm))
+    required = native.get("required_cameras")
+    required = list(protocol.cameras_for_arm(arm) if required is None else required)
     settings = native.get("policy_contract")
-    extensions = {"backend": "openpi", "policy_type": "pi05"}
+    need_joint = needs_joint_state(settings) if settings else bool(native.get("requires_joint_state", False))
+    result = {
+        "policy_hz": native.get("policy_hz", 30.0),
+        "action_horizon": native.get("action_horizon", 50),
+        "arm": arm,
+        "image_encoding": "jpeg" if cv2 is not None else "raw",
+        "required_cameras": required,
+        "image_resize": "letterbox",
+        "image_sizes": {key: [224, 224] for key in required},
+        "rtc_supported": bool(native.get("rtc_supported", False)),
+        "requires_joint_state": need_joint,
+        "extensions": {"backend": "openpi"},
+    }
     if settings:
-        extensions["policy_contract"] = settings
-        extensions["wire_pose"] = {"parent_frame": "base_link", "ee_frame": "flange", "rotation": "rot6d"}
-        extensions["wire_action_dim"] = action_dimensions(settings)[1]
-        extensions["action_units"] = {
-            "pose_target": ["m"] * 3 + ["dimensionless"] * 6 + ["close_ratio"],
-            "joint_position": ["rad"] * 7 + ["close_ratio"],
-            "joint_velocity": ["rad/s"] * 7 + ["close_ratio"],
-            "eef_twist": ["m/s"] * 3 + ["rad/s"] * 3 + ["close_ratio"],
-            "joint_torque": ["N*m"] * 7 + ["close_ratio"],
-        }[settings["action"]["control_quantity"]] * 2
-    return dict(
-        policy_hz=native.get("policy_hz", 30.0),
-        action_horizon=native.get("action_horizon", 50),
-        arm=arm,
-        image_encoding="jpeg" if cv2 is not None else "raw",
-        required_cameras=required,
-        image_resize="letterbox",
-        image_sizes={key: [224, 224] for key in required},
-        rtc_supported=bool(native.get("rtc_supported", False)),
-        requires_joint_state=bool(native.get("requires_joint_state", False)),
-        **({"execution_steps": native["execution_steps"]} if native.get("execution_steps") is not None else {}),
-        extensions=extensions,
-    )
-
-
-class G2PolicyServer(WebsocketPolicyServer):
-    def __init__(self, policy, host="0.0.0.0", port=None, metadata=None):
-        super().__init__(policy, host=host, port=port, metadata=metadata)
-        self._contract = connection_metadata(metadata)
-        self._requires_joint_state = self._contract["requires_joint_state"]
-        self._settings = (metadata or {}).get("policy_contract")
-        self._advanced = bool(
-            self._settings
-            and (
-                action_dimensions(self._settings)[1] != 20
-                or self._settings["pose"].get("base_to_parent") == "observation"
-                or {self._settings["action"]["relative_to"], self._settings["state"]["relative_to"]}.intersection(
-                    {"current_command_pose", "previous_command_pose", "episode_start_pose", "object_pose"}
-                )
-                or self._settings["timing"]["history_steps"] > 1
-                or self._settings["timing"]["target_offset_steps"] != 0
-                or self._settings["timing"]["stride_steps"] != 1
-            )
+        timing = settings["timing"]
+        need_pose = needs_measured_pose(settings)
+        context = []
+        pose_references = {
+            "current_command_pose": "command_pose",
+            "previous_command_pose": "previous_command_pose",
+            "episode_start_pose": "start_pose",
+            "object_pose": "object_pose",
+        }
+        joint_references = {"episode_start_pose": "start_joint", "object_pose": "object_joint"}
+        for group in ("state", "action"):
+            encoding = settings[group]
+            reference = encoding["relative_to"]
+            if encoding["space"] in ("eef", "both") and reference in pose_references:
+                context.append(pose_references[reference])
+            if encoding["space"] in ("joint", "both") and reference in joint_references:
+                context.append(joint_references[reference])
+        context = list(dict.fromkeys(context))
+        if need_pose and settings["pose"].get("base_to_parent") == "observation":
+            context.append("base_to_parent")
+        if timing["history_steps"] > 1:
+            if need_pose:
+                context.append("pose_history")
+            if need_joint:
+                context.append("joint_history")
+            if required:
+                context.append("image_history")
+        result.update(
+            version=3,
+            reset_supported=bool(native.get("reset_supported", False)),
+            action_spec=protocol.v3.action_spec(settings["action"]["control_quantity"]),
+            observation_spec={
+                "pose": need_pose,
+                "joint": need_joint,
+                "prompt": bool(native.get("requires_prompt", True)),
+                "history_steps": timing["history_steps"],
+                "history_hz": timing["sample_hz"],
+                "context_keys": context,
+            },
+            timing={
+                "action_dt": timing["stride_steps"] / timing["sample_hz"],
+                "first_target_offset_s": timing["target_offset_steps"] / timing["sample_hz"],
+            },
         )
-        protocol.build_metadata(**self._contract)  # Fail before listening on invalid capabilities.
+        result["policy_hz"] = 1 / result["timing"]["action_dt"]
+    elif native.get("execution_steps") is not None:
+        result["execution_steps"] = native["execution_steps"]
+    return result
+
+
+class OpenPIBackend:
+    """Convert canonical G2 observations to OpenPI keys; no wire dialect here."""
+
+    def __init__(self, policy, metadata):
+        self.policy, self.metadata = policy, metadata
+
+    def new_session(self):
+        policy = self.policy.new_session() if hasattr(self.policy, "new_session") else self.policy
+        return type(self)(policy, self.metadata)
+
+    def reset(self):
+        self.policy.reset()
+
+    def infer(self, request):
+        spec = protocol.observation_contract(self.metadata)
+        obs = {"prompt": request["prompt"]}
+        if spec["joint"]:
+            obs["observation/joint"] = request["joint_state"]
+            obs["observation/state"] = request["joint_state"]
+        if spec["pose"]:
+            obs["observation/pose"] = request["state"]
+            obs.setdefault("observation/state", request["state"])
+        if "observation_time_ns" in request:
+            obs["observation/time_ns"] = request["observation_time_ns"]
+        for name, value in request.get("context", {}).items():
+            if name == "image_history":
+                obs.update({_NATIVE_IMAGES[camera]: frames for camera, frames in value.items()})
+            else:
+                obs[f"observation/{name}"] = value
+        for camera, image in request["images"].items():
+            obs.setdefault(_NATIVE_IMAGES[camera], image)
+        if request["rtc_enabled"]:
+            obs.update(rtc_enabled=True, inference_delay=request["inference_delay"])
+            if request["prev_chunk_left_over"] is not None:
+                obs["prev_chunk_left_over"] = request["prev_chunk_left_over"]
+        decode_start = time.monotonic()
+        _decode_jpeg_images(obs)
+        # Histories were already validated as raw RGB by the shared protocol.
+        if protocol.observation_contract(self.metadata)["history_steps"] == 1:
+            protocol.validate_images(
+                {camera: obs[_NATIVE_IMAGES[camera]] for camera in request["images"]},
+                metadata=self.metadata,
+                decoded=True,
+            )
+        decode_ms = (time.monotonic() - decode_start) * 1000
+        infer_start = time.monotonic()
+        result = dict(self.policy.infer(obs))
+        infer_ms = (time.monotonic() - infer_start) * 1000
+        actions = np.asarray(result["actions"], np.float32)
+        dim = protocol.action_contract(self.metadata)["dim"]
+        # Legacy native policies may still return padded outputs; adaptation ends here.
+        if actions.ndim != 2 or actions.shape[1] not in (dim, 32):
+            raise ValueError(f"OpenPI adapter requires expanded {dim}-D actions")
+        result["actions"] = actions[:, :dim]
+        result["server_timing"] = {"decode_ms": decode_ms, "infer_ms": infer_ms}
+        return result
+
+
+class G2PolicyServer(PolicyServer):
+    def __init__(self, policy, host="0.0.0.0", port=None, metadata=None):
+        native = dict(metadata or {})
+        native["reset_supported"] = callable(getattr(policy, "reset", None))
+        self._contract = connection_metadata(native)
+        shared = protocol.build_metadata(**self._contract)
+        super().__init__(OpenPIBackend(policy, shared), host=host, port=port, metadata=shared)
 
     async def run(self):
         _warmup_jpeg_transport()
         await super().run()
-
-    async def _handler(self, websocket):
-        path = getattr(getattr(websocket, "request", None), "path", "/")
-        encoding = codec.encoding_from_path(path)
-        metadata = protocol.build_metadata(**self._contract)
-        if self._advanced:
-            metadata["protocol"] = "g2.openpi.v1"
-        policy = self._policy.new_session() if hasattr(self._policy, "new_session") else self._policy
-        await websocket.send(codec.dumps(metadata, encoding=encoding))
-        while True:
-            payload = None
-            try:
-                raw = await websocket.recv()
-                start = time.monotonic()
-                payload = codec.loads(raw, encoding=encoding)
-                extra = {}
-                parse_payload = payload
-                if self._advanced:
-                    if payload.get("protocol") != "g2.openpi.v1":
-                        raise ValueError("This policy requires explicit g2.openpi.v1 client support")
-                    parse_payload = dict(payload)
-                    parse_payload.pop("protocol")
-                    extra = parse_payload.pop("context", {})
-                    if not isinstance(extra, dict):
-                        raise ValueError("context must be an object")
-                    prefix = parse_payload.pop("prev_chunk_left_over", None)
-                    request = protocol.parse_request(parse_payload, metadata=metadata)
-                    if prefix is not None:
-                        expected_dim = action_dimensions(self._settings)[1]
-                        prefix = np.asarray(prefix, np.float32)
-                        if (
-                            not request["rtc_enabled"]
-                            or prefix.ndim != 2
-                            or not len(prefix)
-                            or prefix.shape[1] != expected_dim
-                            or not np.isfinite(prefix).all()
-                        ):
-                            raise ValueError(f"RTC prefix requires finite (T, {expected_dim}) actions")
-                        request["prev_chunk_left_over"] = prefix
-                else:
-                    request = protocol.parse_request(payload, metadata=metadata)
-                if self._advanced and self._settings["timing"]["history_steps"] > 1:
-                    space = self._settings["state"]["space"]
-                    needed = {"image_history"}
-                    if space in ("eef", "both"):
-                        needed.add("pose_history")
-                    if space in ("joint", "both"):
-                        needed.add("joint_history")
-                    if (
-                        not needed <= extra.keys()
-                        or not set(self._contract["required_cameras"]) <= extra.get("image_history", {}).keys()
-                    ):
-                        raise ValueError("History policy requires all configured state/image histories at sample_hz")
-                if self._settings:
-                    refs = {self._settings["state"]["relative_to"], self._settings["action"]["relative_to"]}
-                    for reference, key in (
-                        ("current_command_pose", "command_pose"),
-                        ("previous_command_pose", "previous_command_pose"),
-                    ):
-                        if reference in refs and key not in extra:
-                            raise ValueError(f"{reference} requires explicit context.{key} at this sample time")
-                unpack_ms = (time.monotonic() - start) * 1000
-                state = request["joint_state"] if self._requires_joint_state else request["state"]
-                obs = {"observation/state": state, "prompt": request["prompt"]}
-                if self._requires_joint_state:
-                    obs["observation/pose"] = request["state"]
-                    obs["observation/joint"] = request["joint_state"]
-                for name, value in extra.items():
-                    if name not in (
-                        "command_pose",
-                        "previous_command_pose",
-                        "object_pose",
-                        "episode_start_pose",
-                        "object_joint",
-                        "base_to_parent",
-                        "pose_history",
-                        "joint_history",
-                        "image_history",
-                        "start_pose",
-                        "start_joint",
-                    ):
-                        raise ValueError(f"Unknown observation context {name}")
-                    if name == "image_history":
-                        for camera, history_frames in value.items():
-                            if camera not in self._contract["required_cameras"]:
-                                raise ValueError("Unexpected history camera")
-                            frames = np.asarray(history_frames)
-                            if frames.dtype != np.uint8 or frames.shape != (
-                                self._settings["timing"]["history_steps"],
-                                224,
-                                224,
-                                3,
-                            ):
-                                raise ValueError("Invalid image_history shape")
-                            obs[_NATIVE_IMAGES[camera] + "_history"] = frames
-                    else:
-                        arr = np.asarray(value, np.float32)
-                        width = 16 if name in ("joint_history", "object_joint", "start_joint") else 20
-                        expected = (
-                            (4, 4)
-                            if name == "base_to_parent"
-                            else (self._settings["timing"]["history_steps"], width)
-                            if name.endswith("_history")
-                            else (width,)
-                        )
-                        if arr.shape != expected or not np.isfinite(arr).all():
-                            raise ValueError(f"Invalid context {name}; expected finite {expected}")
-                        obs[f"observation/{name}"] = arr
-                obs.update({_NATIVE_IMAGES[key]: image for key, image in request["images"].items()})
-                if request["rtc_enabled"]:
-                    obs.update(rtc_enabled=True, inference_delay=request["inference_delay"])
-                    if request["prev_chunk_left_over"] is not None:
-                        obs["prev_chunk_left_over"] = request["prev_chunk_left_over"]
-                decode_start = time.monotonic()
-                _decode_jpeg_images(obs)
-                protocol.validate_images(
-                    {key: obs[_NATIVE_IMAGES[key]] for key in request["images"]}, metadata=metadata, decoded=True
-                )
-                decode_ms = (time.monotonic() - decode_start) * 1000
-                infer_start = time.monotonic()
-                if self._advanced and self._settings["timing"]["history_steps"] > 1:
-                    for key in _NATIVE_IMAGES.values():
-                        if key + "_history" in obs:
-                            obs[key] = obs.pop(key + "_history")
-                result = policy.infer(obs)
-                infer_ms = (time.monotonic() - infer_start) * 1000
-                actions = np.asarray(result["actions"], dtype=np.float32)
-                expected_dim = action_dimensions(self._settings)[1] if self._settings else 20
-                if (
-                    actions.ndim != 2
-                    or not len(actions)
-                    or actions.shape[1] not in (expected_dim, 32)
-                    or not np.isfinite(actions).all()
-                ):
-                    raise ValueError(f"OpenPI adapter requires finite expanded {expected_dim}-D actions")
-                timing = {
-                    "infer_ms": infer_ms,
-                    "unpack_ms": unpack_ms,
-                    "decode_ms": decode_ms,
-                    "process_ms": (time.monotonic() - start) * 1000,
-                }
-                if self._advanced:
-                    response = {
-                        "type": protocol.ACTION_TYPE,
-                        "protocol": "g2.openpi.v1",
-                        "request_id": request["request_id"],
-                        "actions": actions[:, :expected_dim],
-                        "server_timing": timing,
-                        "control_quantity": self._settings["action"]["control_quantity"],
-                    }
-                    for key in ("policy_timing", "rtc_info"):
-                        if key in result:
-                            response[key] = result[key]
-                else:
-                    response = protocol.build_response(
-                        request_id=request["request_id"],
-                        actions=actions[:, :20],
-                        server_timing=timing,
-                        policy_timing=result.get("policy_timing"),
-                        rtc_info=result.get("rtc_info"),
-                    )
-                await websocket.send(codec.dumps(response, encoding=encoding))
-            except websockets.ConnectionClosed:
-                return
-            except Exception as exc:
-                logger.exception("G2 inference failed")
-                request_id = payload.get("request_id", 0) if isinstance(payload, dict) else 0
-                if type(request_id) is not int or request_id < 0:
-                    request_id = 0
-                try:
-                    await websocket.send(
-                        codec.dumps(
-                            protocol.build_error(request_id=request_id, message=f"{type(exc).__name__}: {exc}"),
-                            encoding=encoding,
-                        )
-                    )
-                except websockets.ConnectionClosed:
-                    return

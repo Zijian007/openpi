@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from g2_policy_protocol import protocol
+from g2_policy_tools.validation import validate_rigid_transform as _validate_rigid_transform
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -27,9 +29,7 @@ CLI_FIELDS = {
     "data_root": ("data", "root"),
     "state_space": ("policy", "state", "space"),
     "action_representation": ("policy", "action", "representation"),
-    "prediction_steps": ("policy", "timing", "prediction_steps"),
-    "action_horizon": ("policy", "timing", "prediction_steps"),  # legacy CLI alias
-    "execution_steps": ("policy", "timing", "execution_steps"),
+    "action_horizon": ("policy", "timing", "action_horizon"),
     "params_path": ("model", "params_path"),
     "norm": ("normalization", "mode"),
     "max_frames": ("normalization", "max_frames"),
@@ -39,7 +39,6 @@ CLI_FIELDS = {
     "resume": ("checkpoints", "resume"),
     "wandb": ("wandb", "mode"),
     "wandb_project": ("wandb", "project"),
-    "use_proxy": ("runtime", "use_proxy"),
     **{
         key: ("training", key)
         for key in (
@@ -80,7 +79,7 @@ POLICY_DEFAULTS = {
     "timing": {
         "sample_hz": 30.0,
         "history_steps": 1,
-        "prediction_steps": 50,
+        "action_horizon": 50,
         "execution_steps": None,
         "target_offset_steps": 0,
         "stride_steps": 1,
@@ -109,7 +108,7 @@ SCHEMA = {
     },
     "checkpoints": {"base_dir", "assets_dir", "overwrite", "resume"},
     "normalization": {"mode", "max_frames"},
-    "runtime": {"gpu", "mem_fraction", "use_proxy", "proxy"},
+    "runtime": {"gpu", "mem_fraction"},
     "wandb": {"mode", "project"},
 }
 
@@ -154,9 +153,23 @@ def read_yaml(path: Path) -> dict[str, Any]:
     return result
 
 
+def _migrate_timing_horizon(timing: dict[str, Any]) -> None:
+    """Old snapshots stored H as prediction_steps; live YAML uses action_horizon."""
+    if "prediction_steps" not in timing:
+        return
+    renamed = timing.pop("prediction_steps")
+    if "action_horizon" in timing and timing["action_horizon"] != renamed:
+        raise ValueError("policy.timing cannot set both action_horizon and prediction_steps")
+    timing["action_horizon"] = renamed
+
+
 def upgrade_settings(settings: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
     """Translate v1 fields without reading a template; preserve old state semantics."""
     result = copy.deepcopy(settings)
+    runtime = result.get("runtime")
+    if isinstance(runtime, dict):
+        runtime.pop("use_proxy", None)
+        runtime.pop("proxy", None)
     version = result.get("schema_version", 1)
     if type(version) is not int or version not in (1, 2):
         raise ValueError("schema_version must be 1 or 2")
@@ -174,6 +187,12 @@ def upgrade_settings(settings: dict[str, Any], *, partial: bool = False) -> dict
         if isinstance(pose, dict):
             pose.setdefault("base_to_parent", None)
             pose.setdefault("flange_to_tcp", None)
+    if isinstance(result.get("policy"), dict):
+        timing = result["policy"].get("timing", {})
+        if isinstance(timing, dict):
+            _migrate_timing_horizon(timing)
+            if not partial:
+                timing.setdefault("execution_steps", None)
     if not legacy:
         if "schema_version" in result or not partial:
             result["schema_version"] = 2
@@ -198,7 +217,7 @@ def upgrade_settings(settings: dict[str, Any], *, partial: bool = False) -> dict
         space = data.pop("state_space")
         policy.setdefault("state", {})["space"] = "eef" if space == "pose" else space
     if "action_horizon" in model:
-        policy.setdefault("timing", {})["prediction_steps"] = model.pop("action_horizon")
+        policy.setdefault("timing", {})["action_horizon"] = model.pop("action_horizon")
     result.update(schema_version=2, policy=policy)
     return result
 
@@ -241,20 +260,6 @@ def resolve_settings(settings: dict[str, Any], overrides: dict[str, Any]) -> dic
         result["training"].update(batch_size=1, num_train_steps=20)
         result["experiment"]["name"] = ""  # keep smoke checkpoints out of the regular experiment
     overrides = dict(overrides)
-    if "action_mode" in overrides:  # CLI alias changes actions only, not the state input.
-        mode = overrides.pop("action_mode")
-        if mode not in ("relative", "absolute"):
-            raise ValueError("--action-mode must be relative or absolute")
-        representation = "component_delta" if mode == "relative" else "absolute"
-        if overrides.get("action_representation", representation) != representation:
-            raise ValueError("--action-mode disagrees with --action-representation")
-        overrides["action_representation"] = representation
-    if (
-        "action_horizon" in overrides
-        and "prediction_steps" in overrides
-        and overrides["action_horizon"] != overrides["prediction_steps"]
-    ):
-        raise ValueError("--action-horizon disagrees with --prediction-steps")
     if "action_representation" in overrides:
         action = result["policy"]["action"]
         absolute = overrides["action_representation"] == "absolute"
@@ -274,21 +279,27 @@ def resolve_settings(settings: dict[str, Any], overrides: dict[str, Any]) -> dic
     return result
 
 
+def cameras_for_arm(arm: str, cameras: list | tuple | None = None) -> tuple[str, ...]:
+    available = protocol.cameras_for_arm(arm)
+    selected = available if cameras is None else tuple(cameras)
+    if len(set(selected)) != len(selected) or not set(selected) <= set(available):
+        raise ValueError(f"cameras must be unique names from {available} for arm={arm}, got {selected!r}")
+    return selected
+
+
+def needs_measured_pose(policy: dict[str, Any]) -> bool:
+    return policy["state"]["space"] in ("eef", "both") or policy["action"]["space"] == "eef"
+
+
+def needs_joint_state(policy: dict[str, Any]) -> bool:
+    return policy["state"]["space"] in ("joint", "both") or policy["action"]["space"] == "joint"
+
+
 def selected_cameras(settings: dict[str, Any]) -> tuple[str, ...]:
-    arm = settings["experiment"]["arm"]
-    available = (
-        ("head_color", "hand_left_color", "hand_right_color")
-        if arm == "both"
-        else (
-            "head_color",
-            f"hand_{arm}_color",
-        )
-    )
-    cameras = settings["data"]["cameras"]
-    return available if cameras is None else tuple(cameras)
+    return cameras_for_arm(settings["experiment"]["arm"], settings["data"]["cameras"])
 
 
-def config_name(settings: dict[str, Any]) -> str:
+def preset_name(settings: dict[str, Any]) -> str:
     preset = settings["experiment"]["preset"]
     name = "pi05_g2_vr" if preset == "full_ft" else "pi05_g2_vr_low_mem"
     arm = settings["experiment"]["arm"]
@@ -340,7 +351,7 @@ def _validate_policy(policy: dict[str, Any]) -> None:
             raise ValueError("policy.action.relative_to and delta_scope must be null for absolute actions")
     elif action["relative_to"] is None or action["delta_scope"] not in ("chunk", "step"):
         raise ValueError("Delta actions must specify relative_to and delta_scope: chunk or step")
-    for key in ("history_steps", "prediction_steps", "execution_steps", "target_offset_steps", "stride_steps"):
+    for key in ("history_steps", "action_horizon", "execution_steps", "target_offset_steps", "stride_steps"):
         value = timing[key]
         if key == "execution_steps" and value is None:
             continue
@@ -349,8 +360,8 @@ def _validate_policy(policy: dict[str, Any]) -> None:
     hz = timing["sample_hz"]
     if type(hz) not in (int, float) or not math.isfinite(hz) or hz <= 0:
         raise ValueError("policy.timing.sample_hz must be a positive finite number")
-    if timing["execution_steps"] is not None and timing["execution_steps"] > timing["prediction_steps"]:
-        raise ValueError("policy.timing.execution_steps must not exceed prediction_steps")
+    if timing["execution_steps"] is not None and timing["execution_steps"] > timing["action_horizon"]:
+        raise ValueError("policy.timing.execution_steps must not exceed action_horizon")
 
     choice("pose", "rotation", ("rot6d", "quaternion", "axis_angle"))
     references = (
@@ -406,31 +417,6 @@ def _validate_policy(policy: dict[str, Any]) -> None:
         raise ValueError("eef_twist uses flange; TCP velocity transport requires recorded TCP twist labels")
 
 
-def _validate_rigid_transform(matrix, name):
-    if (
-        not isinstance(matrix, list)
-        or len(matrix) != 4
-        or any(not isinstance(row, list) or len(row) != 4 for row in matrix)
-    ):
-        raise ValueError(f"{name} must be a 4x4 rigid transform")
-    if any(type(v) not in (int, float) or not math.isfinite(v) for row in matrix for v in row):
-        raise ValueError(f"{name} must contain finite numbers")
-    if any(abs(a - b) > 1e-6 for a, b in zip(matrix[3], [0, 0, 0, 1], strict=True)):
-        raise ValueError(f"{name} must have homogeneous last row [0,0,0,1]")
-    for i in range(3):
-        for j in range(3):
-            if abs(sum(matrix[k][i] * matrix[k][j] for k in range(3)) - int(i == j)) > 1e-5:
-                raise ValueError(f"{name} rotation must be orthonormal")
-    r = matrix
-    determinant = (
-        r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
-        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
-        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
-    )
-    if abs(determinant - 1) > 1e-5:
-        raise ValueError(f"{name} rotation determinant must be +1")
-
-
 def validate_settings(settings: dict[str, Any]) -> None:
     _validate_fields(settings, SCHEMA)
     if type(settings["schema_version"]) is not int or settings["schema_version"] != 2:
@@ -451,7 +437,6 @@ def validate_settings(settings: dict[str, Any]) -> None:
     for section, key in (
         ("checkpoints", "overwrite"),
         ("checkpoints", "resume"),
-        ("runtime", "use_proxy"),
         ("model", "discrete_state_input"),
     ):
         if type(settings[section][key]) is not bool:
@@ -494,7 +479,6 @@ def validate_settings(settings: dict[str, Any]) -> None:
         ("checkpoints", "assets_dir"),
         ("wandb", "project"),
         ("runtime", "gpu"),
-        ("runtime", "proxy"),
     ):
         if not isinstance(settings[section][key], str) or not settings[section][key].strip():
             raise ValueError(f"{section}.{key} must be a nonempty string (quote GPU IDs)")
@@ -504,25 +488,12 @@ def validate_settings(settings: dict[str, Any]) -> None:
     repo = Path(settings["data"]["repo_id"])
     if repo.is_absolute() or ".." in repo.parts:
         raise ValueError("data.repo_id must be relative to data.root without '..'")
-    arm = settings["experiment"]["arm"]
     cameras = settings["data"]["cameras"]
     if cameras is not None and (
-        not isinstance(cameras, list) or not cameras or any(not isinstance(item, str) for item in cameras)
+        not isinstance(cameras, list) or any(not isinstance(item, str) for item in cameras)
     ):
         raise ValueError("data.cameras must be null or a list of camera names")
-    cameras = selected_cameras(settings)
-    allowed = (
-        {"head_color", "hand_left_color", "hand_right_color"}
-        if arm == "both"
-        else {
-            "head_color",
-            f"hand_{arm}_color",
-        }
-    )
-    if "head_color" not in cameras or len(cameras) != len(set(cameras)) or not set(cameras) <= allowed:
-        raise ValueError(
-            f"data.cameras must include head_color, use unique names, and be a subset of {sorted(allowed)}"
-        )
+    selected_cameras(settings)
     decay_steps = settings["training"]["decay_steps"] or settings["training"]["num_train_steps"]
     # Smoke deliberately runs only a few updates of the normal schedule.
     if settings["experiment"]["preset"] != "smoke" and decay_steps <= settings["training"]["warmup_steps"]:
@@ -534,16 +505,16 @@ def build_train_config(settings: dict[str, Any], extra_args: tuple[str, ...] = (
     settings = upgrade_settings(settings)
     validate_settings(settings)
 
-    from openpi.adapters.g2 import presets as config_lib
+    from openpi.adapters.g2 import presets
     from openpi.training import optimizer
     from openpi.training import weight_loaders
 
-    base = config_lib.get_config(config_name(settings))
+    base = presets.get_config(preset_name(settings))
     train = settings["training"]
     policy = settings["policy"]
     model = dataclasses.replace(
         base.model,
-        action_horizon=policy["timing"]["prediction_steps"],
+        action_horizon=policy["timing"]["action_horizon"],
         discrete_state_input=settings["model"]["discrete_state_input"],
         max_token_len=max(base.model.max_token_len, 6 * state_dimension(settings) + 96)
         if state_dimension(settings) > 32
@@ -569,8 +540,6 @@ def build_train_config(settings: dict[str, Any], extra_args: tuple[str, ...] = (
         "policy_hz": policy["timing"]["sample_hz"] / policy["timing"]["stride_steps"],
         "policy_contract": copy.deepcopy(policy),
     }
-    if policy["timing"]["execution_steps"] is not None:
-        metadata["execution_steps"] = policy["timing"]["execution_steps"]
     config = dataclasses.replace(
         base,
         model=model,
@@ -624,7 +593,7 @@ def build_train_config(settings: dict[str, Any], extra_args: tuple[str, ...] = (
 
 
 def policy_semantics(settings: dict[str, Any]) -> dict[str, Any]:
-    """Input/label semantics used for statistics and resume; K is deployment-only."""
+    """Input/label semantics used for statistics and resume; execution_steps is deployment-only."""
     policy = copy.deepcopy(settings["policy"])
     policy["timing"].pop("execution_steps")
     return policy
@@ -655,7 +624,7 @@ def describe_policy(settings: dict[str, Any]) -> dict[str, Any]:
         "joint_torque": "joint_torque",
     }[action["control_quantity"]]
     first = timing["target_offset_steps"]
-    last = first + (timing["prediction_steps"] - 1) * timing["stride_steps"]
+    last = first + (timing["action_horizon"] - 1) * timing["stride_steps"]
     return {
         "state_column": {"eef": "state.pose", "joint": "state.joint", "both": ["state.pose", "state.joint"]}[
             policy["state"]["space"]
@@ -663,7 +632,7 @@ def describe_policy(settings: dict[str, Any]) -> dict[str, Any]:
         "state_dim": state_dimension(settings),
         "label_column": ("action" if action["label_source"] == "command" else "state") + "." + suffix,
         "action_dim": arms * action_width,
-        "prediction_shape": [timing["prediction_steps"], arms * action_width],
+        "prediction_shape": [timing["action_horizon"], arms * action_width],
         "target_offsets_steps": [first, last],
         "last_target_time_seconds": last / timing["sample_hz"],
         "action_sample_hz": timing["sample_hz"] / timing["stride_steps"],

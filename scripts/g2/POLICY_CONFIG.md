@@ -86,7 +86,7 @@ pose:
 
 ## 时间采样与历史
 
-设目标采样频率 f=sample_hz，偏移 o=target_offset_steps，间隔 s=stride_steps，预测长度 H：
+设目标采样频率 f=sample_hz，偏移 o=target_offset_steps，间隔 s=stride_steps，预测长度 H（`action_horizon`）：
 
 ```text
 观测历史：t-(L-1)/f, ..., t
@@ -103,26 +103,23 @@ pose:
   动作模型宽度仍为 32，不改变预训练动作投影参数。
 - 部署历史必须由客户端提供按 f 采样的完整数组，不能把稀疏推理请求当作连续视频帧。
   Python 直接调用在未提供历史时缓存逐次观测，调用方须保证采样时间一致。
-- `execution_steps` 是 K，范围 1..H，null 交给客户端；服务端写入握手，不自行驱动机器人。
-  客户端按标签时刻调度；K 不改变训练标签，不进入统计量/续训语义比较。
+- `execution_steps` 只从旧快照读取并校验范围；v3 握手不再把它发给客户端。提交长度在 wholebody `infer.execution_steps`。
+  客户端按标签时刻调度；它不改变训练标签，不进入统计量/续训语义比较。
 
 ## 部署协议
 
-默认单帧、无偏移、步长 1 的 EEF pose_target 使用原有 g2.policy.v2，返回 base/flange rot6d 20 维动作。
-以下配置需要 `g2.openpi.v1`：其他控制量、命令/物体/episode 参考、动态父坐标系、历史或非默认标签时序。
-这是 OpenPI 适配层的显式协议扩展，没有修改相邻 g2-policy-protocol 仓库。
+有训练配置快照的 G2 policy 使用共享 `g2.policy.v3`，兼容保留无快照语义的 v2 pose20 服务；不再使用私有 OpenPI 协议。
 
-- 握手 protocol 为 g2.openpi.v1；extensions.policy_contract 描述模型语义，extensions.wire_action_dim 描述通信宽度，action_units 和 wire_pose 声明通信单位与位姿约定。
-- 请求保留基本的 state(20)、joint_state(16)、images、RTC 字段，额外回传 protocol: g2.openpi.v1。
-- context 接收 command_pose、previous_command_pose、start_pose、start_joint、object_pose、object_joint、base_to_parent。
-- context.pose_history/joint_history 分别是 (L,20)/(L,16)。context.image_history 按相机名存放 (L,224,224,3) RGB uint8。
-  L>1 时必须提供配置要求的全部状态和相机历史；JPEG 只用于当前单帧 images，历史数组使用原始 RGB。
-- 响应额外包含 protocol 和 control_quantity；actions 是该控制量的完整双臂通信宽度。
-- 单臂位置输出的另一臂保留当前实测值；单臂速度/力矩的另一臂为零。客户端始终仅执行 metadata.arm 指定的臂。
-- RTC 前缀宽度与该控制量的通信宽度一致；标签间隔以握手的动作频率为准。
+- action_spec 声明完整双臂 wire 控制量、维度、字段、单位、base_link/flange 坐标约定。
+- observation_spec 只声明模型实际需要的 pose/joint/prompt、相机、历史和 context；例如纯关节状态+关节位置不必再索要 wire pose。模型内部的 delta、rotation、LoRA 和 token 设置不进入通信契约。
+- timing 声明 action_dt 和首目标偏移；L>1 请求必须携带 observation_time_ns 与全部协商的历史数组。
+- reset 在同一连接开始新 episode，清理 adapter 的参考/历史；RTC 前缀使用声明的 wire 动作空间，由同一个 ActionCodec 编入模型空间。
+- `scripts/g2/deploy/config.yaml` 只选 checkpoint、进程/GPU/端口、warmup 与 OpenPI RTC 参数。checkpoint 快照恢复训练语义和选臂，不需重复 ARM/CONFIG_NAME；老 checkpoint 才指定 legacy_preset。
+- 提交长度只在客户端 YAML 的 `infer.execution_steps`。v2 握手仍可带旧快照的建议值；v3 忽略 server 侧该字段。`action_horizon`、`execution_steps`、`replan_after_steps` 的执行语义由客户端负责。
 
-旧机器人客户端只支持 g2.policy.v2，接入其他控制量/历史前需实现新协议。
-GPU-local smoke 客户端支持两种协议，假观测仅验证通信与形状。
+共用工具在 `g2_policy_tools`，OpenPI 的原导入路径保留兼容。协议、通用 server 和新 policy 接入接口见相邻仓库 `g2-policy-protocol/docs/protocol-v3.md`、`docs/architecture.md`。
+
+wholebody 应用绑定 pose_target 与 joint_position。关节位置复用 Gello 真机 rad 限位和每拍 slew（`arm_gello.yaml`）；任何一侧出现 unlimited/`None` 限位则拒绝该 checkpoint。速度、twist、力矩暂未绑定执行器。外部命令/物体/动态坐标系需要 provider；非零首目标偏移当前在执行前拒绝。GPU-local smoke 可用合成参考/历史检查协议，不验证实际机器人执行。
 
 ## 配置示例
 
@@ -174,7 +171,7 @@ YAML 递归覆盖；部分配置切到 absolute 时，省略的 relative_to/delt
 旧导出缺少可选声明时沿用 G2 契约；command 监督声明与 action 标签必须一致。
 统计量与训练使用完全相同的 dataset_factory、采样与编码变换。
 改变采样、参考、控制量、标定、状态/动作表示后重算统计量；数据原地变化需 force。
-续训禁止改变输入输出语义，允许改变 K、总步数和学习率。
+续训禁止改变输入输出语义，允许改变 execution_steps、总步数和学习率。
 
 ```bash
 .venv/bin/python scripts/g2/train/train_pipeline.py --dry-run

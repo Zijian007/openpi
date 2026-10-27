@@ -7,7 +7,7 @@ import torch
 pytest.importorskip("flax")
 
 from openpi import transforms
-from openpi.adapters.g2 import transforms as g2_policy
+from openpi.adapters.g2 import transforms as g2_transforms
 from openpi.adapters.g2.policy import G2Policy
 from openpi.models import model
 from openpi.models.rtc import RTCConfig
@@ -73,7 +73,7 @@ def test_single_arm_rtc_round_trip_keeps_correct_side_and_ignores_inactive_prefi
             rtc_config=RTCConfig(),
             metadata={"robot": "g2", "arm": arm, "action_dim": 20, "model_action_dim": 10},
             transforms=[
-                g2_policy.G2Inputs(model.ModelType.PI05, arm=arm),
+                g2_transforms.G2Inputs(model.ModelType.PI05, arm=arm),
                 transforms.DeltaActions([True] * 9 + [False]),
                 transforms.Normalize(stats),
                 transforms.PadStatesAndActions(32),
@@ -81,11 +81,11 @@ def test_single_arm_rtc_round_trip_keeps_correct_side_and_ignores_inactive_prefi
             output_transforms=[
                 transforms.Unnormalize(stats),
                 transforms.AbsoluteActions([True] * 9 + [False]),
-                g2_policy.G2Outputs(action_dim=10),
+                g2_transforms.G2Outputs(action_dim=10),
             ],
         )
     )
-    obs = g2_policy.make_g2_example()
+    obs = g2_transforms.make_g2_example()
     obs.pop("prompt")  # Numeric echo model has no language tokenizer.
     inactive = "left" if arm == "right" else "right"
     obs.pop(f"observation/wrist_image_{inactive}")
@@ -118,7 +118,7 @@ def test_absolute_prefix_reanchors_normalizes_and_round_trips(quantiles):
             rtc_config=RTCConfig(),
             metadata={"action_dim": 20},
             transforms=[
-                g2_policy.G2Inputs(model.ModelType.PI05),
+                g2_transforms.G2Inputs(model.ModelType.PI05),
                 transforms.DeltaActions(mask),
                 transforms.Normalize(stats, use_quantiles=quantiles),
                 transforms.PadStatesAndActions(32),
@@ -126,11 +126,11 @@ def test_absolute_prefix_reanchors_normalizes_and_round_trips(quantiles):
             output_transforms=[
                 transforms.Unnormalize(stats, use_quantiles=quantiles),
                 transforms.AbsoluteActions(mask),
-                g2_policy.G2Outputs(),
+                g2_transforms.G2Outputs(),
             ],
         )
     )
-    obs = g2_policy.make_g2_example()
+    obs = g2_transforms.make_g2_example()
     obs.pop("prompt")
     obs["observation/state"] = np.arange(20, dtype=np.float32) / 10
     absolute = np.full((6, 20), 3.0, dtype=np.float32)
@@ -187,7 +187,7 @@ def test_joint_state_with_independent_pose_reference_round_trips_rtc(tmp_path, m
     monkeypatch.setattr(native_config.DataConfigFactory, "_load_norm_stats", lambda *args: None)
     monkeypatch.setattr(native_config.ModelTransformFactory, "__call__", lambda *args: transforms.Group())
     dc = data.create(tmp_path, SimpleNamespace(model_type=model.ModelType.PI05))
-    dim, wire_dim = g2_policy.action_dimensions(settings, arm)
+    dim, wire_dim = g2_transforms.action_dimensions(settings, arm)
     echo = EchoModel()
     stats = {"actions": transforms.NormStats(mean=np.ones(dim), std=np.full(dim, 2.0))}
     native = NativePolicy(
@@ -251,7 +251,7 @@ def test_rtc_other_control_quantities_keep_wire_units(tmp_path, monkeypatch, arm
     dc = LeRobotG2DataConfig(repo_id="test", policy=settings, arm=arm, cameras=("head_color",)).create(
         tmp_path, SimpleNamespace(model_type=model.ModelType.PI05)
     )
-    dim, wire_dim = g2_policy.action_dimensions(settings, arm)
+    dim, wire_dim = g2_transforms.action_dimensions(settings, arm)
     stats = {"actions": transforms.NormStats(mean=np.ones(dim), std=np.full(dim, 2.0))}
     policy = G2Policy(
         NativePolicy(

@@ -7,7 +7,9 @@ import yaml
 from openpi.adapters.g2 import config as g2_config
 
 
-@pytest.mark.parametrize("overrides", [{}, {"arm": "right"}, {"action_mode": "absolute"}, {"preset": "full_ft"}])
+@pytest.mark.parametrize(
+    "overrides", [{}, {"arm": "right"}, {"action_representation": "absolute"}, {"preset": "full_ft"}]
+)
 def test_build_config_preserves_model_data_and_lr_settings(overrides):
     settings = g2_config.resolve_settings(g2_config.load_settings(), overrides)
     config = g2_config.build_train_config(settings)
@@ -95,6 +97,24 @@ def test_invalid_yaml_fails_before_training(path, value):
         g2_config.validate_settings(settings)
 
 
+def test_upgrade_drops_legacy_proxy_runtime_fields():
+    settings = g2_config.load_settings()
+    settings["runtime"]["use_proxy"] = False
+    settings["runtime"]["proxy"] = "socks5h://127.0.0.1:1080"
+    upgraded = g2_config.upgrade_settings(settings)
+    assert "use_proxy" not in upgraded["runtime"]
+    assert "proxy" not in upgraded["runtime"]
+    g2_config.validate_settings(upgraded)
+
+
+def test_wrist_only_cameras_are_valid_for_the_selected_arm():
+    settings = g2_config.load_settings()
+    settings["experiment"]["arm"] = "right"
+    settings["data"]["cameras"] = ["hand_right_color"]
+    g2_config.validate_settings(settings)
+    assert g2_config.selected_cameras(settings) == ("hand_right_color",)
+
+
 def test_smoke_uses_valid_schedule_and_disables_wandb():
     settings = g2_config.resolve_settings(g2_config.load_settings(), {"preset": "smoke"})
     config = g2_config.build_train_config(settings)
@@ -129,12 +149,12 @@ def test_serving_restores_checkpoint_settings_before_loading_model(tmp_path, mon
         g2_config.load_settings(),
         {
             "arm": "right",
-            "prediction_steps": 30,
-            "execution_steps": 10,
+            "action_horizon": 30,
             "state_space": state_space,
             "action_representation": representation,
         },
     )
+    settings["policy"]["timing"]["execution_steps"] = 10
     settings["data"]["cameras"] = ["head_color"]
     snapshot = tmp_path / "assets" / g2_config.CHECKPOINT_CONFIG
     snapshot.parent.mkdir()
@@ -157,7 +177,7 @@ def test_serving_restores_checkpoint_settings_before_loading_model(tmp_path, mon
     assert policy.metadata["action_horizon"] == 30
     assert policy.metadata["required_cameras"] == ["head_color"]
     assert policy.metadata["requires_joint_state"] == (state_space == "joint")
-    assert policy.metadata["execution_steps"] == 10
+    assert "execution_steps" not in policy.metadata
     assert policy.metadata["policy_contract"] == settings["policy"]
 
 

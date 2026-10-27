@@ -12,8 +12,8 @@ data:
   root: ./data
   repo_id: vr/Sing_TeaPi/lerobot_v21
   # null = 双臂用三路，单臂用头部和对应腕部。
-  # 可显式设为 [head_color] 或 [head_color, hand_left_color, hand_right_color]。
-  cameras: null               # 必须包含 head_color；单臂不能选另一只手的腕部
+  # null = 头部 + 所选臂腕部。也可只要腕部，例如 [hand_right_color]；缺的槽位用黑图。
+  cameras: null               # 单臂不能选另一只手的腕部
 
 policy:
   pose:
@@ -40,8 +40,7 @@ policy:
   timing:
     sample_hz: 30.0          # 目标采样率；与原数据不同时进行插值/重采样
     history_steps: 1         # 状态按时间拼接；图像按时间横向拼图，部署需提供完整历史
-    prediction_steps: 50     # H：预测帧数，模型 action_horizon 从此处推导
-    execution_steps: null    # K：null 交给部署端；整数写入服务端 metadata
+    action_horizon: 50       # 每个样本监督的动作帧数；模型与握手共用这个名字
     target_offset_steps: 0   # 第一帧标签相对当前观测的偏移，单位 1/sample_hz
     stride_steps: 1          # 标签间隔，动作频率 = sample_hz / stride_steps
 
@@ -76,8 +75,6 @@ normalization:
 runtime:
   gpu: "2"                   # 也可设 "0,1"；环境变量 CUDA_VISIBLE_DEVICES 优先
   mem_fraction: 0.9           # 环境变量 XLA_PYTHON_CLIENT_MEM_FRACTION 优先
-  use_proxy: false
-  proxy: socks5h://127.0.0.1:1080
 
 wandb:
   mode: auto                 # auto = 正常训练开启，smoke 关闭

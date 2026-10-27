@@ -49,11 +49,9 @@ def _parse_argv(argv: list[str]):
     parser.add_argument("--preset", choices=("low_mem", "full_ft", "smoke"))
     parser.add_argument("--smoke", dest="preset", action="store_const", const="smoke")
     parser.add_argument("--full", dest="preset", action="store_const", const="full_ft")
-    parser.add_argument("--config-name", help="Compatibility alias for a built-in G2 preset/arm")
     parser.add_argument("--arm", choices=("both", "left", "right"))
     for flag in ("exp-name", "repo-id", "data-root", "checkpoint-base-dir", "assets-base-dir", "params-path"):
         parser.add_argument(f"--{flag}")
-    parser.add_argument("--action-mode", choices=("relative", "absolute"))
     parser.add_argument("--state-space", choices=("joint", "eef", "both"))
     parser.add_argument(
         "--action-representation",
@@ -68,7 +66,6 @@ def _parse_argv(argv: list[str]):
         "seed",
         "fsdp-devices",
         "action-horizon",
-        "prediction-steps",
         "max-frames",
         "warmup-steps",
         "decay-steps",
@@ -77,12 +74,8 @@ def _parse_argv(argv: list[str]):
     for flag in ("peak-lr", "decay-lr"):
         parser.add_argument(f"--{flag}", type=float)
     parser.add_argument("--keep-period", type=lambda value: None if value.lower() in ("none", "null") else int(value))
-    parser.add_argument(
-        "--execution-steps", type=lambda value: None if value.lower() in ("none", "null") else int(value)
-    )
-    for flag in ("overwrite", "resume", "use-proxy"):
+    for flag in ("overwrite", "resume"):
         parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction)
-    parser.add_argument("--no-proxy", dest="use_proxy", action="store_false")
     parser.add_argument("--wandb", nargs="?", const="on", choices=("auto", "on", "off"))
     parser.add_argument("--no-wandb", dest="wandb", action="store_const", const="off")
     parser.add_argument("--wandb-project", "--project-name", dest="wandb_project")
@@ -98,18 +91,6 @@ def _parse_argv(argv: list[str]):
 
 def _resolve(args):
     overrides = vars(args).copy()
-    name = overrides.pop("config_name", None)
-    if name:
-        base = name.removesuffix("_left").removesuffix("_right")
-        presets = {"pi05_g2_vr": "full_ft", "pi05_g2_vr_low_mem": "low_mem"}
-        if base not in presets:
-            raise ValueError("--config-name only accepts built-in pi05_g2_vr configurations; use YAML for overrides")
-        if name.endswith(("_left", "_right")):
-            arm = "left" if name.endswith("_left") else "right"
-            if "arm" in overrides and overrides["arm"] != arm:
-                raise ValueError("--arm disagrees with --config-name")
-            overrides["arm"] = arm
-        overrides["preset"] = presets[base]
     if "arm" not in overrides and "ARM" in os.environ:
         overrides["arm"] = os.environ["ARM"]
     settings = g2_config.resolve_settings(g2_config.load_settings(args.config), overrides)
@@ -133,11 +114,6 @@ def _setup_runtime(settings):
     os.environ["HF_LEROBOT_HOME"] = settings["data"]["root"]
     os.environ["CUDA_VISIBLE_DEVICES"] = settings["runtime"]["gpu"]
     os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = str(settings["runtime"]["mem_fraction"])
-    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
-        if settings["runtime"]["use_proxy"]:
-            os.environ[key] = settings["runtime"]["proxy"]
-        else:
-            os.environ.pop(key, None)
 
 
 def _check_dataset(settings):
@@ -290,7 +266,7 @@ def main(argv: list[str] | None = None) -> None:
     if any(arg.startswith("--") and not arg.startswith(("--optimizer.", "--ema-decay")) for arg in extra_args):
         raise ValueError("Configure model/data/training in YAML; '--' only accepts optimizer/EMA overrides")
     _setup_runtime(settings)
-    name = g2_config.config_name(settings)
+    name = g2_config.preset_name(settings)
     norm_path = Path(settings["checkpoints"]["assets_dir"]) / name / settings["data"]["repo_id"] / "norm_stats.json"
     ckpt_dir = Path(settings["checkpoints"]["base_dir"]) / name / settings["experiment"]["name"]
     skip_norm = should_skip_norm(settings["normalization"]["mode"], norm_path)

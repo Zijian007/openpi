@@ -15,7 +15,8 @@
     _env.sh / bootstrap.sh / README.md   # 共享
     train/                               # norm + 训练
     deploy/                              # serve_policy + smoke client
-  data/g2_vr_lerobot_v21/                # HF_LEROBOT_HOME/<repo_id>（仅 v2.1）
+    tests/                               # 训练/部署入口回归测试
+  data/<data.repo_id>/                   # HF_LEROBOT_HOME + train/config.yaml（仅 v2.1）
   src/openpi/adapters/g2/             # 配置、数据变换、policy 包装、协议与服务
   checkpoints/
 
@@ -27,17 +28,19 @@
 ```bash
 cd ~/openpi
 bash scripts/g2/bootstrap.sh                 # uv sync --extra g2
-bash scripts/g2/bootstrap.sh --download-base # + 拉 pi05_base（需代理时常开）
+bash scripts/g2/bootstrap.sh --download-base # + 拉 pi05_base
 ```
 
 本仓库已移除 examples/、third_party/ 及 ALOHA / LIBERO 子模块；G2 安装不再初始化子模块。
 
 ## 数据
 
+数据集位置是 `train/config.yaml` 的 `data.root` + `data.repo_id`，不是写死的目录名。
+
 ```bash
 # 采数机 / wholebody：launcher.lerobot.format: v2.1（或 both）
 rsync -avP .../recorded/vr/lerobot_v21/ \
-  ~/openpi/data/g2_vr_lerobot_v21/
+  ~/openpi/data/<data.repo_id>/
 ```
 
 `HF_LEROBOT_HOME` 默认 = `~/openpi/data`（见 `_env.sh`）。
@@ -92,13 +95,13 @@ Python 入口的覆盖顺序：`config.yaml` → 自定义 YAML → smoke 短跑
 | `experiment.preset` | `low_mem` LoRA / `full_ft` 全参 / `smoke` 短跑 |
 | `experiment.arm` | `both` / `left` / `right` |
 | `data.root` + `data.repo_id` | 本地 LeRobot v2.1 数据集位置 |
-| `data.cameras` | `null` 自动选择头部和所选臂腕部；也可显式写 `[head_color]` 等子集，必须含头部 |
+| `data.cameras` | `null` 自动选择头部和所选臂腕部；也可只要腕部。π₀.₅ 缺的相机槽位填黑图并 mask 掉 |
 | `policy.pose` | 模型位姿坐标系、TCP 标定和旋转表示；磁盘/通信保持 base_link / flange / rot6d |
 | `policy.state.space` | `eef` / `joint` / `both`，独立于动作表示和动作参考 |
 | `policy.action.representation` | `absolute` / `component_delta` / SE(3) body、spatial、hybrid delta；夹爪绝对 |
 | `policy.action.relative_to` / `delta_scope` | 指定参考和 chunk/step；absolute 均为 null |
-| `policy.timing.prediction_steps` | 每个样本监督的动作帧数 H，默认 50；自动设置模型 action_horizon |
-| `policy.timing.execution_steps` | 执行帧数 K；null 由部署端决定，整数传入握手 metadata |
+| `policy.timing.action_horizon` | 每个样本监督的动作帧数，默认 50；模型与握手共用这个名字 |
+| `policy.timing.execution_steps` | 只在旧快照里出现；提交长度在 wholebody `infer.execution_steps` |
 | `model.discrete_state_input` | 是否将当前状态编码进 prompt |
 | `training.decay_steps` | `null` 时跟随总训练步数；smoke 保留正常预热周期 |
 | `normalization.mode` | `auto` / `force` / `skip` |
@@ -112,29 +115,28 @@ batch 和 assets 路径一致。`auto` 仅在统计文件及其配置签名匹�
 实验根目录和每份 checkpoint 的 `assets/` 都保存 `g2_train_config.yaml`，包含实际生效的配置。
 部署加载带此文件的新 checkpoint 时，会自动恢复训练时的模型、动作和相机设置，不受后来修改的 YAML 影响；
 v1 快照自动迁移，保留原来的状态输入。没有 YAML 快照的老 checkpoint 继续使用原来的具名 TrainConfig。
-续训允许修改总步数、学习率和执行 K，但不允许改变数据/模型/Policy 输入输出语义。
+续训允许修改总步数和学习率，但不允许改变数据/模型/Policy 输入输出语义。
 
 ## 部署（`scripts/g2/deploy/`）
 
-`serve_policy.sh` 选 checkpoint 后调用专属 `scripts/g2/deploy/serve_policy.py`，通过 G2 适配层加载模型。
+`deploy/config.yaml` 选择 checkpoint 和进程设置，`serve_policy.sh` 调用专属 `scripts/g2/deploy/serve_policy.py`，通过 G2 适配层加载模型。
 原生 `scripts/serve_policy.py` 保持原生协议，不处理 G2 preset 或 G2 控制器。
 默认 **warmup**：监听前假图 infer 两次（付 JAX JIT）；`--no-warmup` 可关。
 `JAX_COMPILATION_CACHE_DIR` 在 `_env.sh` 里指到 `$OPENPI_DATA_HOME/jax_compile_cache`。
 
 ```bash
-# ≠ G2_pi policy_server。与 LeRobot :8000 并存时加 --port 8001
+# ≠ G2_pi policy_server。deploy/config.yaml 默认 :8001，与 LeRobot :8000 分开
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/deploy/serve_policy.sh \
-  --config-name pi05_g2_vr_low_mem \
-  --policy-dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
-# 省略 --policy-dir → 最近写入的实验里，数值最大的 step（非跨实验比 step，也非字典序）
+  --policy.dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
+# 省略 --policy.dir 使用 deploy/config.yaml 的 checkpoint；训练语义和 arm 从快照恢复
 # healthz 在 warmup 结束后才 OK；日志应有 warmup step=0 infer_ms≈10s+，step=1 ≈100ms
 
-bash scripts/g2/deploy/smoke_infer_client.sh --port 8000   # 端口对齐 serve；首包应已是稳态
+bash scripts/g2/deploy/smoke_infer_client.sh   # 端口对齐 deploy/config.yaml；首包应已是稳态
 ```
 
 | 脚本 | 作用 |
 |------|------|
-| `deploy/serve_policy.sh` | 选 ckpt + G2 专属 `deploy/serve_policy.py`（默认 warmup） |
+| `deploy/serve_policy.sh` | 读取部署 YAML 后调用 G2 专属 server（默认 warmup） |
 | `deploy/smoke_infer_client.sh` | 假观测 round-trip |
 
 域控：`start_openpi_pi05_infer.sh`（`openpi_pi05_client`）。详见 [openpi-pi05-deploy-g2.md](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)。
@@ -143,7 +145,7 @@ bash scripts/g2/deploy/smoke_infer_client.sh --port 8000   # 端口对齐 serve�
 
 - 环境 / cache / W&B（`G2_openpi`）分开；ckpt **不互通**
 - `serve_policy` ≠ `G2_pi` `policy_server`
-- 域控 `lerobot_pi05_client` 只服务 LeRobot 线；OpenPI 用 `openpi_pi05_client`
+- 域控共用 `G2WebSocketPolicyClient` 与 policy runtime，模型差异留在 GPU 适配器
 ## 单臂 π₀.₅
 
 使用 `ARM=both|left|right`，默认 `both`。右臂新实验：
@@ -161,8 +163,8 @@ ARM=right .venv/bin/python scripts/g2/train/train_pipeline.py --no-resume --exp-
 部署时配置必须与训练一致：
 
 ```bash
-ARM=right bash scripts/g2/deploy/serve_policy.sh \
-  --policy-dir checkpoints/pi05_g2_vr_low_mem_right/right_arm_run/<step>
+bash scripts/g2/deploy/serve_policy.sh \
+  --policy.dir checkpoints/pi05_g2_vr_low_mem_right/right_arm_run/<step>
 ```
 
 服务端根据本次双臂实测 EE 将单臂预测映射回 20 维绝对动作，RTC 前缀也只对所选臂进行归一化和引导。须同步更新 wholebody 执行端：它读取 `arm` metadata，仅采集头部与对应腕部相机，并不向未选中手臂和夹爪发送 policy 指令。部署脚本中已有的双臂 checkpoint 路径不能用于单臂配置，须显式指定本次实验路径。
@@ -171,8 +173,7 @@ joint 状态模型在握手中声明 requires_joint_state，客户端需额外�
 
 ## G2 通信协议
 
-默认位姿部署使用独立 `g2-policy-protocol==0.4.1` 的 `g2.policy.v2`，与 wholebody/G2_pi 共用单份 JSON Schema。
-其他控制量、历史和扩展参考使用显式协商的 `g2.openpi.v1`；机器人客户端需实现此协议后使用，详见 [Policy 配置说明](POLICY_CONFIG.md#部署协议)。
+G2 使用 `g2-policy-protocol==0.5.0` 中共享的 `g2.policy.v3`，保留 v2 pose20 兼容。控制量、观测、时间和 reset 都通过能力声明；详见 [Policy 配置说明](POLICY_CONFIG.md#部署协议)。
 协议是可选依赖：`uv sync --extra g2` 从相邻 `../g2-policy-protocol` 安装；原生安装无需此依赖。
 仅部署 wheel 时，将 `tool.uv.sources.g2-policy-protocol.path` 改为本地 wheel 文件路径，再 `uv lock` 和 `uv sync --extra g2`。
 G2 专属入口使用 `G2PolicyServer`；原生服务端不再按 robot metadata 分派或识别 G2。
@@ -190,7 +191,8 @@ G2 适配逻辑位于 `openpi.adapters.g2`，启动入口位于 `scripts/g2/`，
 - `policy.py`：先恢复 G2 配置，再委托原生 loader 加载模型；包装推理结果，处理单臂输出扩展。
 - `server.py`：G2 协议、JPEG 解码与传输预热、metadata。
 - `scripts/g2/deploy/serve_policy.py`：启动参数、策略预热与服务启动。
-- `tests/`：适配层回归测试与原生代码隔离检查；部署入口测试位于 `scripts/g2/deploy/serve_policy_test.py`。
+- `src/openpi/adapters/g2/tests/`：适配层回归测试与原生代码隔离检查。
+- `scripts/g2/tests/`：训练/部署入口回归测试，与 `train/`、`deploy/` 主入口分开。
 
 原生模型、loss、优化器和 DataLoader 不包含 G2 分支。DataLoader 只提供可选 dataset_factory 通用扩展接口；G2 采样逻辑在 data.py。
 原生配置注册表不注册 G2；Python 调用需使用 `openpi.adapters.g2.presets.get_config`。

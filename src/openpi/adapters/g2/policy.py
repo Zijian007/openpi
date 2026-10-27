@@ -12,7 +12,6 @@ from openpi.adapters.g2.data import LeRobotG2DataConfig
 from openpi.adapters.g2.data import policy_for_data
 from openpi.adapters.g2.transforms import ActionCodec
 from openpi.adapters.g2.transforms import expand_arm_actions
-from openpi.adapters.g2.transforms import selected_camera_ids
 from openpi.policies import policy_config as native_policy_config
 from openpi.policies.policy import PolicyRecorder
 from openpi.shared import download
@@ -111,18 +110,20 @@ class G2Policy(base_policy.BasePolicy):
         return context
 
 
-def create_trained_policy(train_config: TrainConfig, checkpoint_dir, **kwargs) -> G2Policy:
+def create_trained_policy(train_config: TrainConfig | None, checkpoint_dir, **kwargs) -> G2Policy:
     """Restore adapter settings, then let native OpenPI load weights and transforms."""
-    if not isinstance(train_config.data, LeRobotG2DataConfig):
-        raise ValueError("The G2 policy loader requires a G2 data adapter")
     checkpoint_dir = Path(download.maybe_download(str(checkpoint_dir)))
     snapshot = checkpoint_dir / "assets" / g2_config.CHECKPOINT_CONFIG
     if snapshot.is_file():
         payload = g2_config.read_yaml(snapshot)
         restored = g2_config.build_train_config(payload["settings"], tuple(payload["extra_args"]))
-        if restored.name != train_config.name:
+        if train_config is not None and restored.name != train_config.name:
             raise ValueError(f"Checkpoint config is {restored.name}, requested {train_config.name}")
         train_config = restored
+    elif train_config is None:
+        raise ValueError("Checkpoint has no g2_train_config.yaml; provide an explicit legacy preset")
+    if not isinstance(train_config.data, LeRobotG2DataConfig):
+        raise ValueError("The G2 policy loader requires a G2 data adapter")
 
     arm = train_config.data.arm
     settings = policy_for_data(train_config.data)
@@ -133,9 +134,9 @@ def create_trained_policy(train_config: TrainConfig, checkpoint_dir, **kwargs) -
         "action_dim": wire_dim,
         "model_action_dim": action_dim,
         "policy_contract": settings,
-        "required_cameras": list(selected_camera_ids(arm, train_config.data.cameras)),
-        "requires_joint_state": train_config.data.resolved_state_space in ("joint", "both")
-        or settings["action"]["space"] == "joint",
+        "required_cameras": list(g2_config.cameras_for_arm(arm, train_config.data.cameras)),
+        "requires_joint_state": g2_config.needs_joint_state(settings),
+        "requires_prompt": True,
     }
     configured = dataclasses.replace(train_config, policy_metadata=metadata)
     return G2Policy(native_policy_config.create_trained_policy(configured, checkpoint_dir, **kwargs), settings)
