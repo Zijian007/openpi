@@ -16,7 +16,7 @@ bash scripts/g2/deploy/serve_policy.sh \
   --port 8001 --rtc --rtc-soft-overlap-steps 5 --rtc-guidance 10
 ```
 
-Checkpoint semantics come from `assets/g2_train_config.yaml`. `configs/deploy.yaml` already sets port 8001 and RTC; the flags above only override that file. Checkpoints without a snapshot still need `legacy_preset` in the deploy YAML.
+Checkpoint semantics come from `assets/g2_train_config.yaml`. `configs/deploy.yaml` already sets port 8001 and RTC; the flags above only override that file. Deployment requires a schema v6 training snapshot; checkpoints without it are rejected.
 
 Warmup runs both ordinary and guided inference before opening the port. Metadata
 advertises `rtc_supported`, `rtc_protocol`, `rtc_soft_overlap_steps`,

@@ -1,7 +1,6 @@
 # Process deployment settings. State/action semantics and model hyperparameters
 # are restored from checkpoint/assets/g2_train_config.yaml.
 checkpoint: checkpoints/pi05_g2_vr_low_mem_right/Sing_TeaPi/30000
-legacy_preset: null  # only set for old checkpoints without a saved training snapshot
 server:
   host: 0.0.0.0
   port: 8001
@@ -11,4 +10,4 @@ server:
   rtc_soft_overlap_steps: 5
   rtc_guidance: 10.0
 runtime:
-  gpu: "2"
+  gpus: [2]

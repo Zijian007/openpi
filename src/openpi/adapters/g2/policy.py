@@ -1,78 +1,39 @@
 """Checkpoint restoration and robot output adaptation around the native Policy."""
 
-from collections import deque
+import copy
 import dataclasses
 from pathlib import Path
 
-import numpy as np
+from g2_policy_tools.geometry import ActionCodec
 from openpi_client import base_policy
 
 from openpi.adapters.g2 import config as g2_config
 from openpi.adapters.g2.data import LeRobotG2DataConfig
-from openpi.adapters.g2.data import policy_for_data
-from openpi.adapters.g2.transforms import ActionCodec
-from openpi.adapters.g2.transforms import expand_arm_actions
 from openpi.policies import policy_config as native_policy_config
 from openpi.policies.policy import PolicyRecorder
 from openpi.shared import download
-from openpi.training.config import TrainConfig
 
 
 class G2Policy(base_policy.BasePolicy):
     """Adapt decoded model actions to the full G2 wire layout, outside native inference."""
 
-    def __init__(self, policy, settings=None):
+    def __init__(self, policy, settings):
         self._policy = policy
         self._settings = settings
-        self._history = deque(maxlen=settings["timing"]["history_steps"] if settings else 1)
-        self._start = None
-        self._previous_command = None
+        self._codec = ActionCodec(settings, self.metadata.get("arm", "both"))
 
     @property
     def metadata(self) -> dict:
         return self._policy.metadata
 
     def reset(self) -> None:
-        self._history.clear()
-        self._start = None
-        self._previous_command = None
         self._policy.reset()
 
     def infer(self, obs: dict, *, noise=None) -> dict:
-        if self._settings is None:
-            result = self._policy.infer(obs) if noise is None else self._policy.infer(obs, noise=noise)
-            if self.metadata.get("arm", "both") != "both":
-                result = dict(result)
-                pose = obs.get("observation/pose", obs["observation/state"])
-                result["actions"] = expand_arm_actions(result["actions"], pose, self.metadata["arm"])
-            return result
         context = self.prepare_observation(obs)
         result = self._policy.infer(context) if noise is None else self._policy.infer(context, noise=noise)
         result = dict(result)
-        result["actions"] = ActionCodec(self._settings, self.metadata.get("arm", "both")).decode(
-            result["actions"], context
-        )
-        if self._history.maxlen > 1:
-            frame = {}
-            for key in (
-                "observation/pose",
-                "observation/joint",
-                "observation/image",
-                "observation/wrist_image_left",
-                "observation/wrist_image_right",
-            ):
-                if key in context:
-                    value = np.asarray(obs.get(key, context[key]))
-                    frame[key] = (value[-1] if value.ndim == 4 else value).copy()
-            self._history.append(frame)
-        if self._start is None:
-            self._start = {
-                key: np.asarray(value).copy()
-                for key, value in context.items()
-                if key in ("observation/pose", "observation/joint")
-            }
-        if "observation/command_pose" in context:
-            self._previous_command = np.asarray(context["observation/command_pose"]).copy()
+        result["actions"] = self._codec.decode(result["actions"], context)
         return result
 
     def new_session(self):
@@ -80,50 +41,28 @@ class G2Policy(base_policy.BasePolicy):
 
     def prepare_observation(self, obs):
         context = dict(obs)
-        space = self._settings["state"]["space"]
-        if space != "joint":
+        if self._settings["state"]["pose"]["enabled"]:
             context.setdefault("observation/pose", context["observation/state"])
-        if space == "joint":
-            context.setdefault("observation/joint", context["observation/state"])
-        for suffix in ("pose", "joint"):
-            key = f"observation/{suffix}"
-            if key in context:
-                start = (self._start or context)[key]
-                context.setdefault(f"observation/start_{suffix}", start)
-        if self._previous_command is not None:
-            context.setdefault("observation/previous_command_pose", self._previous_command)
-        elif "observation/command_pose" in context:
-            context.setdefault("observation/previous_command_pose", context["observation/command_pose"])
-        count = self._settings["timing"]["history_steps"]
-        frames = [*self._history, context][-count:]
-        frames = [frames[0]] * (count - len(frames)) + frames
-        for suffix in ("pose", "joint"):
-            key = f"observation/{suffix}"
-            if key in context:
-                context.setdefault(f"observation/{suffix}_history", np.stack([frame[key] for frame in frames]))
-        for key in ("observation/image", "observation/wrist_image_left", "observation/wrist_image_right"):
-            if key in context and count > 1 and np.asarray(context[key]).ndim == 3:
-                context[key] = np.stack([frame[key] for frame in frames])
+        if self._settings["state"]["joint"]["enabled"]:
+            context.setdefault("observation/joint", context.get("observation/joint", context["observation/state"]))
         return context
 
 
-def create_trained_policy(train_config: TrainConfig | None, checkpoint_dir, **kwargs) -> G2Policy:
-    """Restore adapter settings, then let native OpenPI load weights and transforms."""
+def create_trained_policy(checkpoint_dir, **kwargs) -> G2Policy:
+    """Restore a schema v6 snapshot, then let native OpenPI load weights and transforms."""
     checkpoint_dir = Path(download.maybe_download(str(checkpoint_dir)))
     snapshot = checkpoint_dir / "assets" / g2_config.CHECKPOINT_CONFIG
-    if snapshot.is_file():
-        payload = g2_config.read_yaml(snapshot)
-        restored = g2_config.build_train_config(payload["settings"], tuple(payload["extra_args"]))
-        if train_config is not None and restored.name != train_config.name:
-            raise ValueError(f"Checkpoint config is {restored.name}, requested {train_config.name}")
-        train_config = restored
-    elif train_config is None:
-        raise ValueError("Checkpoint has no g2_train_config.yaml; provide an explicit legacy preset")
+    if not snapshot.is_file():
+        raise ValueError("G2 serving requires a g2_train_config.yaml snapshot (schema_version: 6)")
+    payload = g2_config.read_yaml(snapshot)
+    train_config = g2_config.build_train_config(
+        g2_config.normalize_settings(payload["settings"]), tuple(payload["extra_args"])
+    )
     if not isinstance(train_config.data, LeRobotG2DataConfig):
         raise ValueError("The G2 policy loader requires a G2 data adapter")
 
     arm = train_config.data.arm
-    settings = policy_for_data(train_config.data)
+    settings = copy.deepcopy(train_config.data.policy)
     action_dim, wire_dim = ActionCodec(settings, arm).dimensions
     metadata = {
         **(train_config.policy_metadata or {}),
@@ -140,7 +79,7 @@ def create_trained_policy(train_config: TrainConfig | None, checkpoint_dir, **kw
 
 
 class G2PolicyRecorder(PolicyRecorder):
-    """Keep reference/history state and record paths separate for each connection."""
+    """Keep policy record paths separate for each connection."""
 
     def new_session(self):
         import uuid

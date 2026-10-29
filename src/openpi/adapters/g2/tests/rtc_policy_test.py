@@ -1,5 +1,7 @@
+import copy
 from types import SimpleNamespace
 
+from g2_policy_tools.geometry import action_dimensions
 import numpy as np
 import pytest
 import torch
@@ -12,6 +14,15 @@ from openpi.adapters.g2.policy import G2Policy
 from openpi.models import model
 from openpi.models.rtc import RTCConfig
 from openpi.policies.policy import Policy as NativePolicy
+
+
+def _absolute_settings():
+    from openpi.adapters.g2.config import POLICY_DEFAULTS
+    from openpi.adapters.g2.tests.geometry_test import set_encoding
+
+    settings = copy.deepcopy(POLICY_DEFAULTS)
+    set_encoding(settings["action"]["pose"])
+    return settings
 
 
 class EchoModel(torch.nn.Module):
@@ -33,9 +44,16 @@ def test_absolute_single_arm_rtc_uses_pose_for_inactive_arm(tmp_path, monkeypatc
 
     monkeypatch.setattr(config_lib.DataConfigFactory, "_load_norm_stats", lambda *args: None)
     monkeypatch.setattr(config_lib.ModelTransformFactory, "__call__", lambda *args: transforms.Group())
-    data = g2_configs.LeRobotG2DataConfig(
-        repo_id="test", arm=arm, state_space=state_space, use_delta_actions=False, cameras=("head_color",)
-    ).create(tmp_path, SimpleNamespace(model_type=model.ModelType.PI05))
+    from openpi.adapters.g2.config import POLICY_DEFAULTS
+    from openpi.adapters.g2.tests.geometry_test import set_encoding
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
+    settings = copy.deepcopy(POLICY_DEFAULTS)
+    set_state_space(settings, state_space)
+    set_encoding(settings["action"]["pose"])
+    data = g2_configs.LeRobotG2DataConfig(repo_id="test", arm=arm, policy=settings, cameras=("head_color",)).create(
+        tmp_path, SimpleNamespace(model_type=model.ModelType.PI05)
+    )
     stats = {"actions": transforms.NormStats(mean=np.ones(10), std=np.full(10, 2.0))}
     policy = G2Policy(
         NativePolicy(
@@ -45,7 +63,8 @@ def test_absolute_single_arm_rtc_uses_pose_for_inactive_arm(tmp_path, monkeypatc
             metadata={"robot": "g2", "arm": arm, "action_dim": 20, "model_action_dim": 10},
             transforms=[*data.data_transforms.inputs, transforms.Normalize(stats), transforms.PadStatesAndActions(32)],
             output_transforms=[transforms.Unnormalize(stats), *data.data_transforms.outputs],
-        )
+        ),
+        settings,
     )
     pose = np.arange(20, dtype=np.float32) / 10
     obs = {
@@ -73,7 +92,7 @@ def test_single_arm_rtc_round_trip_keeps_correct_side_and_ignores_inactive_prefi
             rtc_config=RTCConfig(),
             metadata={"robot": "g2", "arm": arm, "action_dim": 20, "model_action_dim": 10},
             transforms=[
-                g2_transforms.G2Inputs(model.ModelType.PI05, arm=arm),
+                g2_transforms.G2Inputs(arm=arm),
                 transforms.DeltaActions([True] * 9 + [False]),
                 transforms.Normalize(stats),
                 transforms.PadStatesAndActions(32),
@@ -83,7 +102,8 @@ def test_single_arm_rtc_round_trip_keeps_correct_side_and_ignores_inactive_prefi
                 transforms.AbsoluteActions([True] * 9 + [False]),
                 g2_transforms.G2Outputs(action_dim=10),
             ],
-        )
+        ),
+        _absolute_settings(),
     )
     obs = g2_transforms.make_g2_example()
     obs.pop("prompt")  # Numeric echo model has no language tokenizer.
@@ -118,7 +138,7 @@ def test_absolute_prefix_reanchors_normalizes_and_round_trips(quantiles):
             rtc_config=RTCConfig(),
             metadata={"action_dim": 20},
             transforms=[
-                g2_transforms.G2Inputs(model.ModelType.PI05),
+                g2_transforms.G2Inputs(),
                 transforms.DeltaActions(mask),
                 transforms.Normalize(stats, use_quantiles=quantiles),
                 transforms.PadStatesAndActions(32),
@@ -128,7 +148,8 @@ def test_absolute_prefix_reanchors_normalizes_and_round_trips(quantiles):
                 transforms.AbsoluteActions(mask),
                 g2_transforms.G2Outputs(),
             ],
-        )
+        ),
+        _absolute_settings(),
     )
     obs = g2_transforms.make_g2_example()
     obs.pop("prompt")
@@ -169,7 +190,7 @@ def test_server_rejects_rtc_when_disabled():
 
 
 @pytest.mark.parametrize("arm", ["both", "left", "right"])
-@pytest.mark.parametrize("representation", ["component_delta", "se3_body_delta", "se3_spatial_delta", "hybrid_delta"])
+@pytest.mark.parametrize("representation", ["component_delta", "se3_body_delta"])
 @pytest.mark.parametrize("scope", ["chunk", "step"])
 def test_joint_state_with_independent_pose_reference_round_trips_rtc(tmp_path, monkeypatch, arm, representation, scope):
     import copy
@@ -179,15 +200,18 @@ def test_joint_state_with_independent_pose_reference_round_trips_rtc(tmp_path, m
     from openpi.adapters.g2.tests.geometry_test import poses
     from openpi.training import config as native_config
 
+    from openpi.adapters.g2.tests.geometry_test import set_encoding
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
     settings = copy.deepcopy(POLICY_DEFAULTS)
-    settings["state"]["space"] = "joint"
-    settings["action"].update(representation=representation, delta_scope=scope)
-    settings["pose"]["rotation"] = "quaternion"
+    set_state_space(settings, "joint")
+    set_encoding(settings["action"]["pose"], representation, scope=scope)
+    settings["action"]["pose"]["coordinates"]["rotation"] = "quaternion"
     data = LeRobotG2DataConfig(repo_id="test", policy=settings, arm=arm, cameras=("head_color",))
     monkeypatch.setattr(native_config.DataConfigFactory, "_load_norm_stats", lambda *args: None)
     monkeypatch.setattr(native_config.ModelTransformFactory, "__call__", lambda *args: transforms.Group())
     dc = data.create(tmp_path, SimpleNamespace(model_type=model.ModelType.PI05))
-    dim, wire_dim = g2_transforms.action_dimensions(settings, arm)
+    dim, wire_dim = action_dimensions(settings, arm)
     echo = EchoModel()
     stats = {"actions": transforms.NormStats(mean=np.ones(dim), std=np.full(dim, 2.0))}
     native = NativePolicy(
@@ -226,7 +250,6 @@ def test_joint_state_with_independent_pose_reference_round_trips_rtc(tmp_path, m
         ("joint_position", "component_delta", "chunk"),
         ("joint_position", "component_delta", "step"),
         ("joint_velocity", "absolute", None),
-        ("eef_twist", "absolute", None),
         ("joint_torque", "absolute", None),
     ],
 )
@@ -237,21 +260,18 @@ def test_rtc_other_control_quantities_keep_wire_units(tmp_path, monkeypatch, arm
     from openpi.adapters.g2.data import LeRobotG2DataConfig
     from openpi.training import config as native_config
 
+    from openpi.adapters.g2.tests.geometry_test import set_joint_action
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
     settings = copy.deepcopy(POLICY_DEFAULTS)
-    settings["state"]["space"] = "joint"
-    settings["action"].update(
-        space="eef" if quantity == "eef_twist" else "joint",
-        control_quantity=quantity,
-        representation=representation,
-        delta_scope=scope,
-        relative_to=None if representation == "absolute" else "current_measured_pose",
-    )
+    set_state_space(settings, "joint")
+    set_joint_action(settings, quantity, representation, scope=scope)
     monkeypatch.setattr(native_config.DataConfigFactory, "_load_norm_stats", lambda *args: None)
     monkeypatch.setattr(native_config.ModelTransformFactory, "__call__", lambda *args: transforms.Group())
     dc = LeRobotG2DataConfig(repo_id="test", policy=settings, arm=arm, cameras=("head_color",)).create(
         tmp_path, SimpleNamespace(model_type=model.ModelType.PI05)
     )
-    dim, wire_dim = g2_transforms.action_dimensions(settings, arm)
+    dim, wire_dim = action_dimensions(settings, arm)
     stats = {"actions": transforms.NormStats(mean=np.ones(dim), std=np.full(dim, 2.0))}
     policy = G2Policy(
         NativePolicy(

@@ -16,7 +16,17 @@ def test_wrapper_only_expands_selected_arm_and_preserves_native_result(arm):
         infer=lambda obs, **kwargs: seen.append(kwargs) or native_result,
         reset=lambda: seen.append("reset"),
     )
-    wrapper = G2Policy(native)
+    import copy
+
+    from openpi.adapters.g2.config import POLICY_DEFAULTS
+
+    from openpi.adapters.g2.tests.geometry_test import set_encoding
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
+    settings = copy.deepcopy(POLICY_DEFAULTS)
+    set_state_space(settings, "joint")
+    set_encoding(settings["action"]["pose"])
+    wrapper = G2Policy(native, settings)
     measured = np.arange(20, dtype=np.float32)
     obs = {"observation/state": np.zeros(16, np.float32), "observation/pose": measured}
     noise = np.ones((2, 32), np.float32)
@@ -35,28 +45,54 @@ def test_wrapper_only_expands_selected_arm_and_preserves_native_result(arm):
     assert seen[-1] == "reset"
 
 
-def test_episode_reference_is_isolated_per_session_and_reset():
+def test_command_reference_comes_from_the_request_not_session_state():
     import copy
 
     from openpi.adapters.g2.config import POLICY_DEFAULTS
     from openpi.adapters.g2.tests.geometry_test import poses
 
+    from openpi.adapters.g2.tests.geometry_test import set_encoding
+
     settings = copy.deepcopy(POLICY_DEFAULTS)
-    settings["action"]["relative_to"] = "episode_start_pose"
+    set_encoding(settings["action"]["pose"], "component_delta", scope="chunk", source="action")
     native = SimpleNamespace(
         metadata={"arm": "both"}, infer=lambda obs: {"actions": np.zeros((2, 20), np.float32)}, reset=lambda: None
     )
     original = G2Policy(native, settings)
     a, b = original.new_session(), original.new_session()
     first, second, third = poses(1), poses(2), poses(3)
-    np.testing.assert_allclose(a.infer({"observation/state": first})["actions"][0, :3], first[:3])
-    np.testing.assert_allclose(b.infer({"observation/state": second})["actions"][0, :3], second[:3])
-    np.testing.assert_allclose(a.infer({"observation/state": third})["actions"][0, :3], first[:3])
+    np.testing.assert_allclose(
+        a.infer({"observation/state": first, "observation/pose": first, "observation/command_pose": first})["actions"][0, :3],
+        first[:3],
+    )
+    np.testing.assert_allclose(
+        b.infer({"observation/state": second, "observation/pose": second, "observation/command_pose": second})["actions"][0, :3],
+        second[:3],
+    )
+    np.testing.assert_allclose(
+        a.infer({"observation/state": third, "observation/pose": third, "observation/command_pose": first})["actions"][0, :3],
+        first[:3],
+    )
     a.reset()
-    np.testing.assert_allclose(a.infer({"observation/state": third})["actions"][0, :3], third[:3])
+    np.testing.assert_allclose(
+        a.infer({"observation/state": third, "observation/pose": third, "observation/command_pose": third})["actions"][0, :3],
+        third[:3],
+    )
 
 
-def test_history_fallback_preserves_order_and_copies_observation_frames():
+def test_server_does_not_invent_observation_history():
+    import copy
+    from openpi.adapters.g2.config import POLICY_DEFAULTS
+
+    settings = copy.deepcopy(POLICY_DEFAULTS)
+    settings["timing"]["history_steps"] = 3
+    wrapper = G2Policy(SimpleNamespace(metadata={"arm": "both"}), settings)
+    context = wrapper.prepare_observation({"observation/state": np.zeros(20)})
+    assert "observation/pose_history" not in context
+    assert "observation/start_pose" not in context
+
+
+def test_explicit_histories_are_used_without_reconstructing_incomplete_cached_history():
     import copy
 
     from openpi.adapters.g2.config import POLICY_DEFAULTS
@@ -64,18 +100,20 @@ def test_history_fallback_preserves_order_and_copies_observation_frames():
 
     settings = copy.deepcopy(POLICY_DEFAULTS)
     settings["timing"]["history_steps"] = 3
-    seen = []
-
-    def infer(obs):
-        seen.append(obs)
-        return {"actions": np.zeros((2, 20), np.float32)}
-
-    wrapper = G2Policy(SimpleNamespace(metadata={"arm": "both"}, infer=infer), settings)
-    frames = [poses(i) for i in range(4)]
-    expected = [frame.copy() for frame in frames]
-    for i, frame in enumerate(frames):
-        wrapper.infer({"observation/state": frame, "observation/image": np.full((8, 8, 3), i, np.uint8)})
-        indices = [max(0, j) for j in range(i - 2, i + 1)]
-        np.testing.assert_array_equal(seen[-1]["observation/pose_history"], np.stack([expected[j] for j in indices]))
-        np.testing.assert_array_equal(seen[-1]["observation/image"][:, 0, 0, 0], indices)
-        frame[:] = -1  # Subsequent history must use the captured values, not caller-owned buffers.
+    native = SimpleNamespace(metadata={"arm": "both"}, infer=lambda obs: {"actions": np.zeros((2, 20), np.float32)})
+    wrapper = G2Policy(native, settings)
+    first, current = poses(1), poses(2)
+    pose_history = np.stack([first, first, current])
+    joint_history = np.arange(48, dtype=np.float32).reshape(3, 16)
+    context = wrapper.prepare_observation(
+        {
+            "observation/state": current,
+            "observation/pose": current,
+            "observation/joint": joint_history[-1],
+            "observation/pose_history": pose_history,
+            "observation/joint_history": joint_history,
+        }
+    )
+    assert context["observation/pose_history"] is pose_history
+    assert context["observation/joint_history"] is joint_history
+    assert "observation/start_joint" not in context  # No first-frame joints were observed.

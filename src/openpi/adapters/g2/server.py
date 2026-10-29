@@ -5,11 +5,10 @@ import time
 
 from g2_policy_protocol import protocol
 from g2_policy_protocol.server import PolicyServer
+from g2_policy_tools.capabilities import policy_capabilities
 import numpy as np
 from openpi_client import msgpack_numpy
 
-from openpi.adapters.g2.config import needs_joint_state
-from openpi.adapters.g2.config import needs_measured_pose
 from openpi.adapters.g2.contract import CAMERA_OBSERVATION_KEYS
 
 try:
@@ -70,7 +69,6 @@ def connection_metadata(policy_metadata):
     required = native.get("required_cameras")
     required = list(protocol.cameras_for_arm(arm) if required is None else required)
     settings = native.get("policy_contract")
-    need_joint = needs_joint_state(settings) if settings else bool(native.get("requires_joint_state", False))
     result = {
         "policy_hz": native.get("policy_hz", 30.0),
         "action_horizon": native.get("action_horizon", 50),
@@ -80,55 +78,15 @@ def connection_metadata(policy_metadata):
         "image_resize": "letterbox",
         "image_sizes": {key: [224, 224] for key in required},
         "rtc_supported": bool(native.get("rtc_supported", False)),
-        "requires_joint_state": need_joint,
+        "requires_joint_state": bool(native.get("requires_joint_state", False)),
         "extensions": {"backend": "openpi"},
     }
     if settings:
-        timing = settings["timing"]
-        need_pose = needs_measured_pose(settings)
-        context = []
-        pose_references = {
-            "current_command_pose": "command_pose",
-            "previous_command_pose": "previous_command_pose",
-            "episode_start_pose": "start_pose",
-            "object_pose": "object_pose",
-        }
-        joint_references = {"episode_start_pose": "start_joint", "object_pose": "object_joint"}
-        for group in ("state", "action"):
-            encoding = settings[group]
-            reference = encoding["relative_to"]
-            if encoding["space"] in ("eef", "both") and reference in pose_references:
-                context.append(pose_references[reference])
-            if encoding["space"] in ("joint", "both") and reference in joint_references:
-                context.append(joint_references[reference])
-        context = list(dict.fromkeys(context))
-        if need_pose and settings["pose"].get("base_to_parent") == "observation":
-            context.append("base_to_parent")
-        if timing["history_steps"] > 1:
-            if need_pose:
-                context.append("pose_history")
-            if need_joint:
-                context.append("joint_history")
-            if required:
-                context.append("image_history")
-        result.update(
-            version=3,
-            reset_supported=bool(native.get("reset_supported", False)),
-            action_spec=protocol.v3.action_spec(settings["action"]["control_quantity"]),
-            observation_spec={
-                "pose": need_pose,
-                "joint": need_joint,
-                "prompt": bool(native.get("requires_prompt", True)),
-                "history_steps": timing["history_steps"],
-                "history_hz": timing["sample_hz"],
-                "context_keys": context,
-            },
-            timing={
-                "action_dt": timing["stride_steps"] / timing["sample_hz"],
-                "first_target_offset_s": timing["target_offset_steps"] / timing["sample_hz"],
-            },
-        )
-        result["policy_hz"] = 1 / result["timing"]["action_dt"]
+        result.update(policy_capabilities(
+            settings, required, prompt=bool(native.get("requires_prompt", True)),
+            reset=bool(native.get("reset_supported", False)),
+        ))
+        result["extensions"]["response_mode"] = "full_chunk"
     elif native.get("execution_steps") is not None:
         result["execution_steps"] = native["execution_steps"]
     return result
@@ -139,6 +97,8 @@ class OpenPIBackend:
 
     def __init__(self, policy, metadata):
         self.policy, self.metadata = policy, metadata
+        self._observation_spec = protocol.observation_contract(metadata)
+        self._action_dim = protocol.action_contract(metadata)["dim"]
 
     def new_session(self):
         policy = self.policy.new_session() if hasattr(self.policy, "new_session") else self.policy
@@ -148,7 +108,7 @@ class OpenPIBackend:
         self.policy.reset()
 
     def infer(self, request):
-        spec = protocol.observation_contract(self.metadata)
+        spec = self._observation_spec
         obs = {"prompt": request["prompt"]}
         if spec["joint"]:
             obs["observation/joint"] = request["joint_state"]
@@ -172,7 +132,7 @@ class OpenPIBackend:
         decode_start = time.monotonic()
         _decode_jpeg_images(obs)
         # Histories were already validated as raw RGB by the shared protocol.
-        if protocol.observation_contract(self.metadata)["history_steps"] == 1:
+        if spec["history_steps"] == 1:
             protocol.validate_images(
                 {camera: obs[CAMERA_OBSERVATION_KEYS[camera]] for camera in request["images"]},
                 metadata=self.metadata,
@@ -183,7 +143,7 @@ class OpenPIBackend:
         result = dict(self.policy.infer(obs))
         infer_ms = (time.monotonic() - infer_start) * 1000
         actions = np.asarray(result["actions"], np.float32)
-        dim = protocol.action_contract(self.metadata)["dim"]
+        dim = self._action_dim
         # Legacy native policies may still return padded outputs; adaptation ends here.
         if actions.ndim != 2 or actions.shape[1] not in (dim, 32):
             raise ValueError(f"OpenPI adapter requires expanded {dim}-D actions")
@@ -196,8 +156,7 @@ class G2PolicyServer(PolicyServer):
     def __init__(self, policy, host="0.0.0.0", port=None, metadata=None):
         native = dict(metadata or {})
         native["reset_supported"] = callable(getattr(policy, "reset", None))
-        self._contract = connection_metadata(native)
-        shared = protocol.build_metadata(**self._contract)
+        shared = protocol.build_metadata(**connection_metadata(native))
         super().__init__(OpenPIBackend(policy, shared), host=host, port=port, metadata=shared)
 
     async def run(self):

@@ -285,105 +285,117 @@ def _train(config: _config.TrainConfig, stop: _StopRequest) -> None:
         overwrite=config.overwrite,
         resume=config.resume,
     )
-    _checkpoints.write_checkpoint_assets(config.checkpoint_dir, config.checkpoint_assets)
-    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
+    with checkpoint_manager:
+        if config.resume_step is not None and config.resume_step not in checkpoint_manager.all_steps():
+            raise FileNotFoundError(f"Selected resume step {config.resume_step} is no longer available")
+        init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
-    data_loader = _data_loader.create_data_loader(
-        config,
-        sharding=data_sharding,
-        shuffle=True,
-    )
-    data_iter = iter(data_loader)
-    batch = next(data_iter)
-    logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
+        data_loader = _data_loader.create_data_loader(
+            config,
+            sharding=data_sharding,
+            shuffle=True,
+        )
+        data_iter = iter(data_loader)
+        batch = next(data_iter)
+        logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
-    # Log images from first batch to sanity check.
-    images_to_log = [
-        wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-        for i in range(min(5, len(next(iter(batch[0].images.values())))))
-    ]
-    wandb.log({"camera_views": images_to_log}, step=0)
+        # Log images from first batch to sanity check.
+        images_to_log = [
+            wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
+            for i in range(min(5, len(next(iter(batch[0].images.values())))))
+        ]
+        wandb.log({"camera_views": images_to_log}, step=0)
 
-    train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
-    jax.block_until_ready(train_state)
-    logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
+        train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
+        jax.block_until_ready(train_state)
+        logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
 
-    if resuming:
-        train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
+        if resuming:
+            train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader, step=config.resume_step)
+            if config.resume_step is not None and int(train_state.step) != config.resume_step:
+                raise ValueError(f"Checkpoint step {config.resume_step} disagrees with saved state step {int(train_state.step)}")
+            logging.info("Restored model, optimizer and completed step %d", int(train_state.step))
+        # Record only an initialized/restored experiment. Failed restores keep prior records intact.
+        for name in config.checkpoint_assets:
+            previous = config.checkpoint_dir / name
+            original = config.checkpoint_dir / f"initial_{name}"
+            if previous.is_file() and not original.exists():
+                original.write_text(previous.read_text())
+        _checkpoints.write_checkpoint_assets(config.checkpoint_dir, config.checkpoint_assets)
 
-    ptrain_step = jax.jit(
-        functools.partial(train_step, config),
-        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
-        out_shardings=(train_state_sharding, replicated_sharding),
-        donate_argnums=(1,),
-    )
+        ptrain_step = jax.jit(
+            functools.partial(train_step, config),
+            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+            out_shardings=(train_state_sharding, replicated_sharding),
+            donate_argnums=(1,),
+        )
 
-    start_step = int(train_state.step)
-    pbar = tqdm.tqdm(
-        range(start_step, config.num_train_steps),
-        initial=start_step,
-        total=config.num_train_steps,
-        dynamic_ncols=True,
-    )
+        start_step = int(train_state.step)
+        pbar = tqdm.tqdm(
+            range(start_step, config.num_train_steps),
+            initial=start_step,
+            total=config.num_train_steps,
+            dynamic_ncols=True,
+        )
 
-    infos = []
-    saved_step: int | None = None
-    # Armed only for the train loop. Ctrl+C during init still aborts immediately.
-    stop.armed = True
-    try:
-        for step in pbar:
-            with sharding.set_mesh(mesh):
-                train_state, info = ptrain_step(train_rng, train_state, batch)
-            infos.append(info)
-            # train_step increments the counter, so the completed step is the loop index plus one.
-            completed_step = step + 1
-            if completed_step % config.log_interval == 0:
-                stacked_infos = common_utils.stack_forest(infos)
-                reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-                info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-                pbar.write(f"Step {completed_step}: {info_str}")
-                wandb.log(reduced_info, step=completed_step)
-                infos = []
-
-            save_step = checkpoint_step_to_save(
-                completed_step,
-                start_step=start_step,
-                save_interval=config.save_interval,
-                num_train_steps=config.num_train_steps,
-                interrupt=stop.requested,
-            )
-            if save_step is not None:
-                if stop.requested:
-                    logging.info("Saving interrupt checkpoint at step %d", save_step)
-                jax.block_until_ready(train_state)
-                _checkpoints.save_state(
-                    checkpoint_manager,
-                    train_state,
-                    data_loader,
-                    save_step,
-                    checkpoint_assets=config.checkpoint_assets,
-                )
-                saved_step = save_step
-            if stop.requested:
-                pbar.close()
-                break
-            batch = next(data_iter)
-    finally:
-        logging.info("Waiting for checkpoint manager to finish")
+        infos = []
+        saved_step: int | None = None
+        # Armed only for the train loop. Ctrl+C during init still aborts immediately.
+        stop.armed = True
         try:
-            checkpoint_manager.wait_until_finished()
-        finally:
-            stop.armed = False
+            for step in pbar:
+                with sharding.set_mesh(mesh):
+                    train_state, info = ptrain_step(train_rng, train_state, batch)
+                infos.append(info)
+                # train_step increments the counter, so the completed step is the loop index plus one.
+                completed_step = step + 1
+                if completed_step % config.log_interval == 0:
+                    stacked_infos = common_utils.stack_forest(infos)
+                    reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+                    info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+                    pbar.write(f"Step {completed_step}: {info_str}")
+                    wandb.log(reduced_info, step=completed_step)
+                    infos = []
 
-    if stop.requested:
-        if saved_step is None:
-            logging.info("Interrupted before a new checkpoint was written.")
-        else:
-            logging.info(
-                "Interrupt checkpoint is complete at step %d. Resume with RESUME=true to continue.",
-                saved_step,
-            )
-        raise SystemExit(128 + int(stop.signum if stop.signum is not None else signal.SIGINT))
+                save_step = checkpoint_step_to_save(
+                    completed_step,
+                    start_step=start_step,
+                    save_interval=config.save_interval,
+                    num_train_steps=config.num_train_steps,
+                    interrupt=stop.requested,
+                )
+                if save_step is not None:
+                    if stop.requested:
+                        logging.info("Saving interrupt checkpoint at step %d", save_step)
+                    jax.block_until_ready(train_state)
+                    _checkpoints.save_state(
+                        checkpoint_manager,
+                        train_state,
+                        data_loader,
+                        save_step,
+                        checkpoint_assets=config.checkpoint_assets,
+                    )
+                    saved_step = save_step
+                if stop.requested:
+                    pbar.close()
+                    break
+                batch = next(data_iter)
+        finally:
+            logging.info("Waiting for checkpoint manager to finish")
+            try:
+                checkpoint_manager.wait_until_finished()
+            finally:
+                stop.armed = False
+
+        if stop.requested:
+            if saved_step is None:
+                logging.info("Interrupted before a new checkpoint was written.")
+            else:
+                logging.info(
+                    "Interrupt checkpoint is complete at step %d. Resume with RESUME=true to continue.",
+                    saved_step,
+                )
+            raise SystemExit(128 + int(stop.signum if stop.signum is not None else signal.SIGINT))
 
 
 if __name__ == "__main__":

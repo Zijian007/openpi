@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import math
 import os
 from pathlib import Path
 import signal
@@ -18,7 +17,6 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from openpi.adapters.g2 import config as g2_config
-from openpi.adapters.g2 import settings_schema
 
 PROJECT_ROOT = g2_config.PROJECT_ROOT
 
@@ -42,41 +40,12 @@ def _parse_argv(argv: list[str]):
     parser.add_argument(
         "--config", type=Path, default=g2_config.DEFAULT_CONFIG, help="YAML file; paths are relative to repo root"
     )
-    parser.add_argument("--preset", choices=tuple(g2_config.PRESET_CONFIG_NAMES))
     parser.add_argument("--smoke", action=argparse.BooleanOptionalAction, help="short run; preserves all module modes")
-    parser.add_argument("--full", dest="preset", action="store_const", const="full_ft")
     parser.add_argument("--arm", choices=("both", "left", "right"))
     for module in ("vision", "language", "action-expert"):
         parser.add_argument(f"--{module}-mode", choices=("frozen", "lora", "full"))
     for flag in ("exp-name", "repo-id", "data-root", "checkpoint-base-dir", "assets-base-dir", "params-path"):
         parser.add_argument(f"--{flag}")
-    parser.add_argument("--state-space", choices=("joint", "eef", "both"))
-    parser.add_argument("--state-mode", choices=("absolute", "relative"))
-    parser.add_argument("--state-spatial", choices=tuple(settings_schema.STATE_METHODS))
-    parser.add_argument("--state-anchor", choices=tuple(settings_schema.REFERENCES))
-    parser.add_argument(
-        "--action-encoding",
-        "--action-representation",
-        dest="action_representation",
-        choices=("absolute", "component_delta", "se3_body_delta", "se3_spatial_delta", "hybrid_delta"),
-        help="legacy encoding selector; new configs use --action-mode/--action-spatial",
-    )
-    for key, choices in (
-        ("quantity", tuple(settings_schema.ACTION_QUANTITIES)),
-        ("source", ("command", "measured")),
-        ("mode", ("absolute", "relative")),
-        ("anchor", tuple(settings_schema.REFERENCES)),
-        ("reference-scope", tuple(settings_schema.REFERENCE_SCOPES)),
-    ):
-        parser.add_argument(f"--action-{key}", choices=choices)
-    parser.add_argument(
-        "--action-spatial", "--action-method", dest="action_spatial", choices=tuple(settings_schema.ACTION_METHODS)
-    )
-    parser.add_argument(
-        "--action-strategy",
-        choices=tuple(settings_schema.REFERENCE_STRATEGIES),
-        help="legacy alias for reference scope",
-    )
     for flag in (
         "batch-size",
         "num-workers",
@@ -115,6 +84,8 @@ def _resolve(args):
         overrides["arm"] = os.environ["ARM"]
     settings = g2_config.resolve_settings(g2_config.load_settings(args.config), overrides)
     if not settings["experiment"]["name"]:
+        if settings["checkpoints"]["resume"]:
+            raise ValueError("Resume requires an explicit experiment.name; use --exp-name for a smoke experiment")
         prefix = "g2_vr_smoke" if settings["run"]["smoke"] else "g2_vr_pi05"
         stamp = dt.datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S_%f")
         settings["experiment"]["name"] = f"{prefix}_{stamp}"
@@ -122,7 +93,6 @@ def _resolve(args):
         settings[section][key] = str(resolve_under_project(settings[section][key]))
     if "://" not in settings["model"]["params_path"]:
         settings["model"]["params_path"] = str(resolve_under_project(settings["model"]["params_path"]))
-    settings["runtime"]["gpu"] = os.environ.get("CUDA_VISIBLE_DEVICES", settings["runtime"]["gpu"])
     settings["runtime"]["mem_fraction"] = float(
         os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION", settings["runtime"]["mem_fraction"])
     )
@@ -132,7 +102,7 @@ def _resolve(args):
 
 def _setup_runtime(settings):
     os.environ["HF_LEROBOT_HOME"] = settings["data"]["root"]
-    os.environ["CUDA_VISIBLE_DEVICES"] = settings["runtime"]["gpu"]
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", ",".join(map(str, settings["runtime"]["gpus"])))
     os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = str(settings["runtime"]["mem_fraction"])
 
 
@@ -144,82 +114,23 @@ def _check_dataset(settings):
     info = json.loads((root / "meta/info.json").read_text())
     if info.get("codebase_version") != "v2.1":
         raise ValueError(f"Expected LeRobot v2.1 in {root}, got {info.get('codebase_version')!r}")
-    features = info.get("features", {})
-    policy = settings["policy"]
-    action = policy["action"]
-    state = policy["state"]["space"]
-    required = {*(f"observation.images.{camera}" for camera in g2_config.selected_cameras(settings))}
-    if state in ("eef", "both") or action["space"] == "eef":
-        required.add("state.pose")
-    if state in ("joint", "both") or action["space"] == "joint":
-        required.add("state.joint")
-    prefix = "action" if action["label_source"] == "command" else "state"
-    suffix = {
-        "pose_target": "pose",
-        "joint_position": "joint",
-        "joint_velocity": "joint_velocity",
-        "eef_twist": "eef_twist",
-        "joint_torque": "joint_torque",
-    }[action["control_quantity"]]
-    label = f"{prefix}.{suffix}"
-    if label not in features and suffix in ("joint_velocity", "eef_twist"):
-        required.add(f"{prefix}.{'joint' if suffix == 'joint_velocity' else 'pose'}")
-    else:
-        required.add(label)
-    references = {policy["state"]["relative_to"], action["relative_to"]}
-    if references.intersection({"current_command_pose", "previous_command_pose"}):
-        required.add("action.pose")
-    if "object_pose" in references:
-        if (policy["state"]["relative_to"] == "object_pose" and state in ("eef", "both")) or action[
-            "relative_to"
-        ] == "object_pose":
-            required.add("reference.object_pose")
-        if policy["state"]["representation"] != "absolute" and state in ("joint", "both"):
-            required.add("reference.object_joint")
-    if policy["pose"]["base_to_parent"] == "observation":
-        required.add("reference.base_to_parent")
-    missing = required - features.keys()
-    if missing:
-        raise ValueError(f"Dataset is missing required features: {sorted(missing)}")
-    fps = info.get("fps")
-    if type(fps) not in (int, float) or not math.isfinite(fps) or fps <= 0:
-        raise ValueError("Dataset fps must be a positive finite number")
-    exported = info.get("wholebody_export", {})
-    # Dataset and wire remain canonical; policy coordinates are converted in the adapter.
-    for field, expected in (("pose_frame", "base_link"), ("ee_frame", "flange"), ("rotation", "rot6d")):
-        if field in exported and exported[field] != expected:
-            raise ValueError(f"Dataset wholebody_export.{field}={exported[field]!r} must match {expected!r}")
-    if (
-        action["label_source"] == "command"
-        and "action_supervision" in exported
-        and exported["action_supervision"] != "command"
-    ):
-        raise ValueError("Dataset wholebody_export.action_supervision must match command labels")
-    for field, dim in (
-        ("state.pose", 20),
-        ("state.joint", 16),
-        ("action.pose", 20),
-        ("action.joint", 16),
-        (
-            label,
-            14
-            if suffix == "eef_twist"
-            else 16
-            if suffix in ("joint_velocity", "joint_torque")
-            else 20
-            if suffix == "pose"
-            else 16,
-        ),
-    ):
-        if field in required and "shape" in features[field] and features[field]["shape"] != [dim]:
-            raise ValueError(f"Dataset {field} must have shape [{dim}]")
+    from g2_policy_tools.data_contract import validate_dataset_contract
+
+    validate_dataset_contract(
+        info.get("features", {}), info, settings["policy"],
+        tuple(f"observation.images.{camera}" for camera in g2_config.selected_cameras(settings)),
+    )
 
 
 def _run_stage(stage: str, snapshot: Path):
     payload = g2_config.read_yaml(snapshot)
-    settings = g2_config.upgrade_settings(payload["settings"])
+    settings = g2_config.normalize_settings(payload["settings"])
     _setup_runtime(settings)  # must precede importing JAX/LeRobot
-    config = g2_config.build_train_config(settings, tuple(payload["extra_args"]))
+    config = g2_config.build_train_config(
+        settings, tuple(payload["extra_args"]),
+        resume_checkpoint=Path(payload["resume_checkpoint"]) if payload.get("resume_checkpoint") else None,
+        resume_training=payload.get("training_state_config"),
+    )
     # scripts/ contains the official entrypoints, without needing to be a package.
     sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
     if stage == "norm":
@@ -282,20 +193,36 @@ def main(argv: list[str] | None = None) -> None:
     settings = _resolve(args)
     g2_config.validate_extra_args(extra_args)
     _setup_runtime(settings)
-    name = g2_config.preset_name(settings)
+    name = g2_config.training_config_name(settings)
     norm_path = Path(settings["checkpoints"]["assets_dir"]) / name / settings["data"]["repo_id"] / "norm_stats.json"
     ckpt_dir = Path(settings["checkpoints"]["base_dir"]) / name / settings["experiment"]["name"]
-    skip_norm = should_skip_norm(settings["normalization"]["mode"], norm_path)
-    if skip_norm and settings["normalization"]["mode"] == "auto":
-        signature_path = norm_path.with_name("g2_norm_config.yaml")
-        skip_norm = signature_path.is_file() and g2_config.read_yaml(signature_path) == _norm_signature(settings)
     norm_only = getattr(args, "norm_only", False)
     dry_run = getattr(args, "dry_run", False)
-    payload = {"settings": settings, "extra_args": list(extra_args)}
+    resume_checkpoint = None
+    resume_training = None
+    if settings["checkpoints"]["resume"]:
+        if norm_only:
+            raise ValueError("Resume cannot be combined with --norm-only; use --no-resume for a new stats computation")
+        from openpi.adapters.g2.resume import resolve_resume
+
+        settings, extra_args, resume_checkpoint, resume_training = resolve_resume(settings, extra_args, ckpt_dir)
+        norm_path = resume_checkpoint / "assets" / settings["data"]["repo_id"] / "norm_stats.json"
+        skip_norm = True
+    else:
+        skip_norm = should_skip_norm(settings["normalization"]["mode"], norm_path)
+        if skip_norm and settings["normalization"]["mode"] == "auto":
+            signature_path = norm_path.with_name("g2_norm_config.yaml")
+            skip_norm = signature_path.is_file() and g2_config.read_yaml(signature_path) == _norm_signature(settings)
+    payload = {"settings": g2_config.public_settings(settings), "extra_args": list(extra_args)}
+    if resume_checkpoint is not None:
+        payload.update(resume_checkpoint=str(resume_checkpoint), training_state_config=resume_training)
+        print(f"Resume checkpoint: {resume_checkpoint} (step={resume_checkpoint.name})")
+        print(f"Target total steps: {settings['training']['num_train_steps']}; decay_steps: {settings['training']['decay_steps']}")
+        print("Normalization: checkpoint assets (normalization.mode only applies to new training)")
     print(f"YAML: {args.config.resolve()}\nTrainConfig: {name}\nCheckpoint: {ckpt_dir}")
     print(f"Norm stats: {norm_path} (skip={skip_norm})")
     print("Resolved experiment configuration:")
-    print(yaml.safe_dump(g2_config.public_settings(settings), sort_keys=False, allow_unicode=True), flush=True)
+    print(yaml.safe_dump(payload["settings"], sort_keys=False, allow_unicode=True), flush=True)
     print("Derived policy contract:")
     print(yaml.safe_dump(g2_config.describe_policy(settings), sort_keys=False, allow_unicode=True), flush=True)
     if dry_run:
@@ -313,22 +240,6 @@ def main(argv: list[str] | None = None) -> None:
         raise FileExistsError(f"Experiment exists: {ckpt_dir}; choose a new experiment.name or use --resume")
     if skip_norm and not norm_only and not norm_path.is_file():
         raise FileNotFoundError(f"Cannot skip normalization: {norm_path} does not exist")
-    if settings["checkpoints"]["resume"] and not norm_only:
-        previous = ckpt_dir / g2_config.CHECKPOINT_CONFIG
-        if previous.is_file():
-            old = g2_config.upgrade_settings(g2_config.read_yaml(previous)["settings"])
-            if old["finetuning"] != settings["finetuning"]:
-                raise ValueError("Cannot resume with changed finetuning modes; use a new experiment.name")
-            # Resume may change total steps / logging / LR, but must preserve input/output semantics.
-            if old["data"] != settings["data"]:
-                raise ValueError("Cannot resume with changed data settings; use a new experiment.name")
-            if g2_config.model_semantics(old) != g2_config.model_semantics(settings):
-                raise ValueError("Cannot resume with changed model settings; use a new experiment.name")
-            if (
-                g2_config.policy_semantics(old) != g2_config.policy_semantics(settings)
-                or old["experiment"]["arm"] != settings["experiment"]["arm"]
-            ):
-                raise ValueError("Cannot resume with changed policy semantics; use a new experiment.name")
     with tempfile.TemporaryDirectory(prefix="g2-train-", dir="/tmp") as temporary:
         snapshot = Path(temporary) / g2_config.CHECKPOINT_CONFIG
         snapshot.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True))

@@ -76,7 +76,6 @@ def test_configured_camera_subset_and_state_source_reach_policy(requires_joint_s
         ("joint_position", "joint", 16),
         ("joint_velocity", "joint", 16),
         ("joint_torque", "joint", 16),
-        ("eef_twist", "eef", 14),
     ],
 )
 def test_non_pose_wire_uses_shared_contract_and_rejects_private_dialect(accepted, quantity, space, dim):
@@ -85,9 +84,9 @@ def test_non_pose_wire_uses_shared_contract_and_rejects_private_dialect(accepted
     from openpi.adapters.g2.config import POLICY_DEFAULTS
 
     settings = copy.deepcopy(POLICY_DEFAULTS)
-    settings["action"].update(
-        control_quantity=quantity, space=space, representation="absolute", relative_to=None, delta_scope=None
-    )
+    from openpi.adapters.g2.tests.geometry_test import set_joint_action
+
+    set_joint_action(settings, quantity)
     calls = []
 
     class Policy:
@@ -122,7 +121,7 @@ def test_non_pose_wire_uses_shared_contract_and_rejects_private_dialect(accepted
     with patch("openpi.adapters.g2.server.cv2", None):
         server = G2PolicyServer(
             Policy(),
-            metadata={"policy_contract": settings, "requires_joint_state": True, "required_cameras": ["head_color"]},
+            metadata={"policy_contract": settings, "requires_joint_state": True, "required_cameras": ["head_color"], "action_horizon": 3},
         )
     ws = Websocket()
     asyncio.run(server._handler(ws))  # noqa: SLF001
@@ -145,14 +144,11 @@ def test_joint_only_checkpoint_does_not_require_wire_pose():
     from openpi.adapters.g2.server import connection_metadata
 
     settings = copy.deepcopy(POLICY_DEFAULTS)
-    settings["state"]["space"] = "joint"
-    settings["action"].update(
-        space="joint",
-        control_quantity="joint_position",
-        representation="absolute",
-        relative_to=None,
-        delta_scope=None,
-    )
+    from openpi.adapters.g2.tests.geometry_test import set_joint_action
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
+    set_state_space(settings, "joint")
+    set_joint_action(settings, "position")
     meta = connection_metadata(
         {
             "policy_contract": settings,
@@ -183,14 +179,7 @@ def test_v3_handshake_does_not_advertise_client_execution_budget():
 
 
 @pytest.mark.parametrize("space", ["joint", "eef", "both"])
-@pytest.mark.parametrize(
-    ("reference", "pose_key", "joint_key"),
-    [
-        ("episode_start_pose", "start_pose", "start_joint"),
-        ("object_pose", "object_pose", "object_joint"),
-    ],
-)
-def test_relative_state_only_declares_references_used_by_its_space(space, reference, pose_key, joint_key):
+def test_relative_state_only_declares_references_used_by_its_space(space):
     import copy
 
     from openpi.adapters.g2.config import POLICY_DEFAULTS
@@ -198,16 +187,21 @@ def test_relative_state_only_declares_references_used_by_its_space(space, refere
     from openpi.adapters.g2.server import connection_metadata
 
     settings = copy.deepcopy(POLICY_DEFAULTS)
-    settings["state"].update(space=space, representation="relative", relative_to=reference)
-    settings["action"].update(
-        space="joint", control_quantity="joint_position", representation="absolute", relative_to=None, delta_scope=None
-    )
+    from openpi.adapters.g2.tests.geometry_test import set_encoding
+    from openpi.adapters.g2.tests.geometry_test import set_joint_action
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
+    set_state_space(settings, space)
+    for kind in ("pose", "joint"):
+        if settings["state"][kind]["enabled"]:
+            set_encoding(settings["state"][kind], "component_delta", scope="chunk", source="action")
+    set_joint_action(settings, "position")
     meta = protocol.build_metadata(**connection_metadata({"policy_contract": settings, "required_cameras": []}))
-    expected = ({pose_key} if space in ("eef", "both") else set()) | (
-        {joint_key} if space in ("joint", "both") else set()
+    expected = ({"command_pose"} if space in ("eef", "both") else set()) | (
+        {"command_joint"} if space in ("joint", "both") else set()
     )
     assert set(meta["observation_spec"]["context_keys"]) == expected
-    context = {key: np.zeros(16 if key == joint_key else 20, np.float32) for key in expected}
+    context = {key: np.zeros(16 if key == "command_joint" else 20, np.float32) for key in expected}
     request = protocol.build_request(
         request_id=1,
         prompt="tea",
@@ -229,4 +223,4 @@ def test_relative_state_only_declares_references_used_by_its_space(space, refere
     assert {f"observation/{key}" for key in expected} <= observed[0].keys()
     if space == "joint":
         assert "observation/pose" not in observed[0]
-        assert f"observation/{pose_key}" not in observed[0]
+        assert "observation/command_pose" not in observed[0]

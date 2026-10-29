@@ -31,7 +31,7 @@ g2_openpi_run_train() {
     echo "ERROR: missing ${G2_OPENPI_PROJECT_ROOT}/.venv — run bash scripts/g2/bootstrap.sh" >&2
     exit 1
   fi
-  # Explicit --config and other caller arguments take precedence over these defaults.
+  # train_pipeline.sh sets its editable YAML path; explicit CLI arguments take precedence.
   exec .venv/bin/python scripts/g2/train/train_pipeline.py \
-    --config scripts/g2/configs/train.yaml "$@"
+    --config "${G2_TRAIN_CONFIG:-scripts/g2/configs/train.yaml}" "$@"
 }

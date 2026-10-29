@@ -9,17 +9,17 @@ from openpi.adapters.g2 import config as g2_config
 
 @pytest.mark.parametrize(
     "overrides",
-    [{}, {"arm": "right"}, {"action_representation": "absolute"}, {"preset": "full_ft"}, {"preset": "low_mem"}],
+    [{}, {"arm": "right"}, {"language_mode": "full"}, {"vision_mode": "frozen"}],
 )
 def test_build_config_preserves_model_data_and_lr_settings(overrides):
     settings = g2_config.resolve_settings(g2_config.load_settings(), overrides)
     config = g2_config.build_train_config(settings)
     assert config.model.action_horizon == 50
     assert config.data.repo_id == settings["data"]["repo_id"]
-    assert config.data.use_delta_actions == (settings["policy"]["action"]["representation"] == "component_delta")
+    assert config.data.policy == settings["policy"]
     assert config.lr_schedule.decay_steps == config.num_train_steps == 50000
     assert (
-        g2_config.upgrade_settings(yaml.safe_load(config.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])["settings"])
+        g2_config.normalize_settings(yaml.safe_load(config.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])["settings"])
         == settings
     )
 
@@ -28,36 +28,26 @@ def test_build_config_preserves_model_data_and_lr_settings(overrides):
 @pytest.mark.parametrize("vision_rank", [0, 4, 16])
 def test_checkpoint_snapshot_is_self_contained_after_yaml_is_edited(tmp_path, preset, vision_rank):
     settings = g2_config.resolve_settings(
-        g2_config.load_settings(), {"action_horizon": 30, "arm": "right", "preset": preset}
+        g2_config.load_settings(),
+        {"action_horizon": 30, "arm": "right", "action_expert_mode": "lora" if preset == "low_mem" else "full"},
     )
     settings["data"]["cameras"] = ["head_color"]
-    settings["model"].update(vision_lora_rank=vision_rank, vision_lora_alpha=8.0)
-    settings["finetuning"]["vision"] = "lora" if vision_rank else "frozen"
+    settings["finetuning"]["vision"]["lora"].update(rank=vision_rank, alpha=8.0)
+    settings["finetuning"]["vision"]["mode"] = "lora" if vision_rank else "frozen"
     config = g2_config.build_train_config(settings)
     snapshot = tmp_path / g2_config.CHECKPOINT_CONFIG
     snapshot.write_text(yaml.safe_dump(yaml.safe_load(config.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])))
     # Loading a checkpoint must not merge in today's template settings.
     with patch("openpi.adapters.g2.config.load_settings", side_effect=AssertionError("must not reload template")):
         payload = g2_config.read_yaml(snapshot)
-        restored = g2_config.build_train_config(payload["settings"], tuple(payload["extra_args"]))
+        restored = g2_config.build_train_config(
+            g2_config.normalize_settings(payload["settings"]), tuple(payload["extra_args"])
+        )
     assert restored.model.action_horizon == 30
     assert restored.data.arm == "right"
     assert restored.data.cameras == ("head_color",)
     assert restored.policy_metadata["action_horizon"] == 30
     assert restored.model == config.model
-
-
-@pytest.mark.parametrize("preset", ["low_mem", "vlm_lora_action_full", "full_ft"])
-def test_old_checkpoint_keeps_vision_lora_disabled(preset):
-    settings = g2_config.resolve_settings(g2_config.load_settings(), {"preset": preset})
-    settings["model"].pop("vision_lora_rank")
-    settings["model"].pop("vision_lora_alpha")
-    settings.pop("finetuning")
-    settings.pop("run")
-    with patch("openpi.adapters.g2.config.load_settings", side_effect=AssertionError("must not reload template")):
-        config = g2_config.build_train_config(settings)
-    assert config.model.vision_lora_rank == 0
-    assert config.model.vision_lora_alpha == 16.0
 
 
 def test_norm_and_train_workers_use_identical_resolved_settings(tmp_path):
@@ -75,7 +65,7 @@ def test_norm_and_train_workers_use_identical_resolved_settings(tmp_path):
     settings["training"]["batch_size"] = 3
     settings["data"]["cameras"] = ["head_color"]
     snapshot = tmp_path / "resolved.yaml"
-    snapshot.write_text(yaml.safe_dump({"settings": settings, "extra_args": []}))
+    snapshot.write_text(yaml.safe_dump({"settings": g2_config.public_settings(settings), "extra_args": []}))
     captured = []
 
     def compute(config, max_frames=None):
@@ -106,11 +96,11 @@ def test_norm_and_train_workers_use_identical_resolved_settings(tmp_path):
         (("training", "batch_size"), True),
         (("training", "num_train_steps"), 5),
         (("checkpoints", "overwrite"), "false"),
-        (("model", "vision_lora_rank"), -1),
-        (("model", "vision_lora_rank"), True),
-        (("model", "vision_lora_rank"), 2.5),
-        (("model", "vision_lora_alpha"), 0),
-        (("model", "vision_lora_alpha"), float("inf")),
+        (("finetuning", "vision", "lora", "rank"), -1),
+        (("finetuning", "vision", "lora", "rank"), True),
+        (("finetuning", "vision", "lora", "rank"), 2.5),
+        (("finetuning", "vision", "lora", "alpha"), 0),
+        (("finetuning", "vision", "lora", "alpha"), float("inf")),
         (("data", "cameras"), ["hand_left_color"]),
         (("data", "cameras"), ["head_color", "head_color"]),
         (("data", "repo_id"), "../outside"),
@@ -126,16 +116,6 @@ def test_invalid_yaml_fails_before_training(path, value):
         g2_config.validate_settings(settings)
 
 
-def test_upgrade_drops_legacy_proxy_runtime_fields():
-    settings = g2_config.load_settings()
-    settings["runtime"]["use_proxy"] = False
-    settings["runtime"]["proxy"] = "socks5h://127.0.0.1:1080"
-    upgraded = g2_config.upgrade_settings(settings)
-    assert "use_proxy" not in upgraded["runtime"]
-    assert "proxy" not in upgraded["runtime"]
-    g2_config.validate_settings(upgraded)
-
-
 def test_wrist_only_cameras_are_valid_for_the_selected_arm():
     settings = g2_config.load_settings()
     settings["experiment"]["arm"] = "right"
@@ -145,7 +125,7 @@ def test_wrist_only_cameras_are_valid_for_the_selected_arm():
 
 
 def test_smoke_uses_valid_schedule_and_disables_wandb():
-    settings = g2_config.resolve_settings(g2_config.load_settings(), {"preset": "smoke"})
+    settings = g2_config.resolve_settings(g2_config.load_settings(), {"smoke": True})
     config = g2_config.build_train_config(settings)
     assert config.num_train_steps == 20
     assert config.batch_size == 1
@@ -182,16 +162,23 @@ def test_serving_restores_checkpoint_settings_before_loading_model(
         {
             "arm": "right",
             "action_horizon": 30,
-            "state_space": state_space,
-            "action_representation": representation,
-            "preset": preset,
+            "action_expert_mode": "lora" if preset == "low_mem" else "full",
         },
     )
-    settings["policy"]["timing"]["execution_steps"] = 10
+    from openpi.adapters.g2.tests.geometry_test import set_encoding
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
+    set_state_space(settings["policy"], state_space)
+    set_encoding(
+        settings["policy"]["action"]["pose"],
+        representation,
+        scope="chunk" if representation != "absolute" else None,
+    )
     settings["data"]["cameras"] = ["head_color"]
+    settings = g2_config.normalize_settings(g2_config.public_settings(settings))
     snapshot = tmp_path / "assets" / g2_config.CHECKPOINT_CONFIG
     snapshot.parent.mkdir()
-    snapshot.write_text(yaml.safe_dump({"settings": settings, "extra_args": []}))
+    snapshot.write_text(yaml.safe_dump({"settings": g2_config.public_settings(settings), "extra_args": []}))
     loaded_models = []
 
     def load(model_config, params):
@@ -203,9 +190,7 @@ def test_serving_restores_checkpoint_settings_before_loading_model(
     monkeypatch.setattr(pi0_config.Pi0Config, "load", load)
     monkeypatch.setattr(g2_configs.LeRobotG2DataConfig, "create", lambda *args: config_lib.DataConfig(asset_id="test"))
     monkeypatch.setattr(policy_lib, "Policy", lambda *args, **kwargs: types.SimpleNamespace(**kwargs))
-    policy = policy_config.create_trained_policy(
-        g2_configs.get_config(g2_config.preset_name(settings)), tmp_path, norm_stats={}
-    )
+    policy = policy_config.create_trained_policy(tmp_path, norm_stats={})
     assert len(loaded_models) == 1
     assert loaded_models[0] == g2_config.build_train_config(settings).model
     assert policy.metadata["action_horizon"] == 30

@@ -69,3 +69,50 @@ def test_checkpoint_extra_assets_require_plain_filenames(tmp_path, name):
 
     with pytest.raises(ValueError, match="filename"):
         write_checkpoint_assets(tmp_path, {name: "contents"})
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_resume_requires_saved_checkpoint(tmp_path, existing):
+    from openpi.training.checkpoints import initialize_checkpoint_dir
+    directory = tmp_path / "experiment"
+    if existing:
+        directory.mkdir()
+    with pytest.raises(FileNotFoundError, match="checkpoint"):
+        initialize_checkpoint_dir(directory, keep_period=None, overwrite=False, resume=True)
+    if not existing:
+        assert not directory.exists()
+
+
+def test_native_checkpoint_restores_step_params_and_optimizer(tmp_path):
+    from types import SimpleNamespace
+
+    from flax import struct
+    import jax
+    import numpy as np
+
+    from openpi.training import checkpoints
+
+    @struct.dataclass
+    class State:
+        step: object
+        params: object
+        opt_state: object
+        ema_params: object = None
+
+    directory = tmp_path / "experiment"
+    manager, resuming = checkpoints.initialize_checkpoint_dir(directory, keep_period=None, overwrite=False, resume=False)
+    assert not resuming
+    state = State(np.array(7, np.int32), {"w": np.array([2., 3.], np.float32)},
+                  {"count": np.array(7, np.int32), "mu": np.array([.3, .4], np.float32)})
+    loader = SimpleNamespace(data_config=lambda: SimpleNamespace(norm_stats=None, asset_id="test"))
+    checkpoints.save_state(manager, state, loader, 7)
+    manager.wait_until_finished()
+    manager.close()
+    manager, resuming = checkpoints.initialize_checkpoint_dir(directory, keep_period=None, overwrite=False, resume=True)
+    assert resuming
+    blank = jax.tree.map(lambda value: np.zeros_like(value), state)
+    restored = checkpoints.restore_state(manager, blank, loader, step=7)
+    assert int(restored.step) == 7
+    for expected, actual in zip(jax.tree.leaves(state), jax.tree.leaves(restored), strict=True):
+        np.testing.assert_array_equal(actual, expected)
+    manager.close()

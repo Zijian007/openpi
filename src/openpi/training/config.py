@@ -523,6 +523,8 @@ class TrainConfig:
     overwrite: bool = False
     # If true, will resume training from the last checkpoint.
     resume: bool = False
+    # G2 resolves and pins a complete checkpoint before launching the training worker.
+    resume_step: tyro.conf.Suppress[int | None] = None
 
     # If true, will enable wandb logging.
     wandb_enabled: bool = True

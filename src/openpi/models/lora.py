@@ -176,4 +176,5 @@ class FeedForward(nn.Module):
         base = jnp.dot(x, w.astype(x.dtype))
         if lora_weights is None:
             return base
-        return base + jnp.dot(jnp.dot(x, lora_weights[0].astype(x.dtype)), lora_weights[1].astype(x.dtype))
+        delta = jnp.dot(jnp.dot(x, lora_weights[0].astype(x.dtype)), lora_weights[1].astype(x.dtype))
+        return base + delta * jnp.asarray(self.lora_config.scaling_value, dtype=base.dtype)

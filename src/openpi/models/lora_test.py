@@ -1,6 +1,7 @@
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import pytest
 
 import openpi.models.lora as lora
 
@@ -92,3 +93,28 @@ def test_lora_ffn_same_output():
     output_lora = ffn_lora.apply(params_lora, x)
 
     assert jnp.allclose(output, output_lora)
+
+
+@pytest.mark.parametrize("rslora", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+def test_ffn_applies_alpha_and_rank_stabilized_scaling(rslora, dtype):
+    options = lora.LoRAConfig(rank=2, alpha=6.0, rslora=rslora)
+    ffn = lora.FeedForward(features=2, hidden_dim=3, lora_config=options)
+    x = jnp.array([[0.2, -0.1], [0.4, 0.3]], dtype=dtype)
+    variables = ffn.init(jax.random.key(0), x)
+    params = {key: jnp.full_like(value, 0.25) if "lora" in key else value for key, value in variables["params"].items()}
+    weights = {key: value.astype(dtype) for key, value in params.items()}
+    scale = jnp.asarray(6.0 / (2.0**0.5 if rslora else 2.0), dtype=dtype)
+    gate = nn.gelu(
+        x @ weights["gating_einsum"][0]
+        + (x @ weights["gating_einsum_lora_a"][0] @ weights["gating_einsum_lora_b"][0]) * scale
+    )
+    up = (
+        x @ weights["gating_einsum"][1]
+        + (x @ weights["gating_einsum_lora_a"][1] @ weights["gating_einsum_lora_b"][1]) * scale
+    )
+    hidden = gate * up
+    expected = hidden @ weights["linear"] + (hidden @ weights["linear_lora_a"] @ weights["linear_lora_b"]) * scale
+    actual = ffn.apply({"params": params}, x)
+    assert actual.dtype == dtype
+    assert jnp.allclose(actual, expected, rtol=1e-5, atol=1e-5)

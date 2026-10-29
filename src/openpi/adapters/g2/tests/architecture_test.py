@@ -67,4 +67,4 @@ def test_native_entrypoints_import_without_g2_dependencies():
 def test_protocol_is_an_optional_dependency():
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())["project"]
     assert all(not dependency.startswith("g2-policy-protocol") for dependency in project["dependencies"])
-    assert "g2-policy-protocol[geometry]==0.5.0" in project["optional-dependencies"]["g2"]
+    assert "g2-policy-protocol[geometry]==0.6.0" in project["optional-dependencies"]["g2"]

@@ -26,7 +26,7 @@ scripts/g2/
 │   ├── smoke_infer_client.py
 │   └── smoke_infer_client.sh
 ├── docs/
-│   ├── training.md            # 数据准备、训练、续训和单臂
+│   ├── training.md            # 从改 YAML 到短跑、续训、选臂
 │   ├── deployment.md          # 加载 checkpoint、预热和推理检查
 │   ├── policy.md              # 状态、动作、坐标系、时间与协议
 │   ├── rtc.md                 # RTC 前缀引导和客户端调度
@@ -61,14 +61,8 @@ scripts/g2/
    bash scripts/g2/deploy/smoke_infer_client.sh
    ```
 
-部署从 checkpoint 的 `assets/g2_train_config.yaml` 恢复训练语义；数据格式、动作表示和相机等详细约定见下表。
-
-当前训练配置使用schema v4：State/Action下的spatial与temporal同级，去掉encoding层。
-`action.target`选择控制量/来源；`spatial.mode / method`定义空间编码，`temporal`定义参考，Action额外选择chunk/step。
-State的EEF坐标与Action共用 `policy.pose`；State历史统一参考一个anchor。旧encoding写法继续兼容。
-微调策略为 `finetuning.vision: lora`、`language: lora`、`action_expert: full`。
-`run.smoke` 独立控制短跑，保持所选模型与冻结规则；`train_full.sh` 切到三个模块全部全参。
-其他预设及本预设的短跑方法见 [训练说明](docs/training.md#vlm-lora--动作专家全参)。
+部署从 checkpoint 的 `assets/g2_train_config.yaml` 恢复训练语义。`policy` 字段见 [公共配置速查](../../../g2-policy-protocol/docs/policy-config.md)；本仓库怎么覆盖 YAML、微调模块和短跑见下表。
+默认微调为 vision/language LoRA、动作专家全参；`run.smoke` 独立控制短跑；`train_full.sh` 将三个模块全部设为 full。详见 [训练说明](docs/training.md#微调)。
 
 ## 使用文档
 
@@ -76,11 +70,13 @@ State的EEF坐标与Action共用 `policy.pose`；State历史统一参考一个an
 |---|---|
 | 准备数据、改训练参数、短跑、续训、选臂 | [训练说明](docs/training.md) |
 | 选择权重、启动服务、检查推理 | [部署说明](docs/deployment.md) |
-| 理解状态/动作表示、参考、坐标变换和时间采样 | [Policy 配置](docs/policy.md) |
+| 本仓库如何覆盖 policy、快照和与 LeRobot 互拷 | [Policy 配置](docs/policy.md) |
 | 配置推理延迟补偿和轨迹衔接 | [RTC](docs/rtc.md) |
 | 找实现位置、理解 G2 与原生代码的依赖 | [适配架构](docs/architecture.md) |
 
 训练和部署 Shell 入口均支持 `--config PATH`。不传时分别使用 `configs/train.yaml`、`configs/deploy.yaml`。
+也可直接修改 `train/train_pipeline.sh` 顶部的 `G2_TRAIN_CONFIG="..."`，保存后运行脚本。
+`train_pipeline.sh` 也接受第一个参数直接指定训练YAML；相对路径以仓库根目录为准。
 可将不同实验的 YAML 放在 `configs/` 下，通过启动参数选择：
 
 ```bash
@@ -98,15 +94,12 @@ Shell 入口也支持 Python 入口的临时覆盖，例如 `--batch-size 2`、`
 所有相对配置路径均以仓库根目录为基准；其他目录下的 YAML 可传绝对路径。
 部署保留 `--deploy-config` 别名；smoke 客户端从同一份部署 YAML 读取地址和端口，`--host` / `--port` 可覆盖。
 
-配置原来位于 `train/config.yaml`、`deploy/config.yaml`，现在统一为 `configs/train.yaml`、`configs/deploy.yaml`。
-Shell 和 Python 启动脚本路径保持不变；显式传入 `--config` 或 `--deploy-config` 时使用新路径。
-
-## 开发与运行手册
+## 开发
 
 ```bash
 .venv/bin/python -m pytest -q scripts/g2/tests src/openpi/adapters/g2/tests
 ```
 
-本路线与 `~/work/G2_pi/` 的 LeRobot v3 + PEFT 环境独立，数据格式和 checkpoint 不互通。
-跨采数机、GPU 和域控的完整操作见 [训练手册](../../../g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md)
+跨采数机、GPU 和域控的操作见 [训练手册](../../../g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md)
 和 [部署手册](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)。
+OpenPI 与 lerobot-finetune 的数据和 checkpoint 不互通。

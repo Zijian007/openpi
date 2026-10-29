@@ -146,12 +146,13 @@ def test_real_advanced_server_transports_history_and_typed_joint_actions(encodin
 
     from openpi.adapters.g2.config import POLICY_DEFAULTS
 
+    from openpi.adapters.g2.tests.geometry_test import set_joint_action
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
     settings = copy.deepcopy(POLICY_DEFAULTS)
-    settings["state"]["space"] = "both"
+    set_state_space(settings, "both")
     settings["timing"]["history_steps"] = 2
-    settings["action"].update(
-        space="joint", control_quantity="joint_position", representation="absolute", relative_to=None, delta_scope=None
-    )
+    set_joint_action(settings, "position")
     seen = []
 
     class Policy:
@@ -165,7 +166,7 @@ def test_real_advanced_server_transports_history_and_typed_joint_actions(encodin
     with patch("openpi.adapters.g2.server.cv2", None):
         server = G2PolicyServer(
             Policy(),
-            metadata={"requires_joint_state": True, "required_cameras": ["head_color"], "policy_contract": settings},
+            metadata={"requires_joint_state": True, "required_cameras": ["head_color"], "policy_contract": settings, "action_horizon": 3},
         )
 
     def client(port):

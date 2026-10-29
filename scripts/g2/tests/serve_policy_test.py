@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 from pathlib import Path
@@ -62,16 +63,24 @@ def test_joint_state_warmup_preserves_pose_for_single_arm_expansion(arm):
         seen.append(obs.copy())
         return {"actions": np.zeros((50, 20), np.float32)}
 
-    policy = SimpleNamespace(metadata={"requires_joint_state": True, "arm": arm}, infer=infer, reset=lambda: None)
+    from openpi.adapters.g2.tests.geometry_test import set_state_space
+
+    contract = copy.deepcopy(g2_config.POLICY_DEFAULTS)
+    set_state_space(contract, "joint")
+    policy = SimpleNamespace(
+        metadata={"requires_joint_state": True, "arm": arm, "policy_contract": contract},
+        infer=infer,
+        reset=lambda: None,
+    )
     args = serve_policy.Args(
         warmup=True,
         rtc=False,
-        policy=serve_policy.Checkpoint(config="pi05_g2_vr_low_mem_right", dir="unused"),
+        policy=serve_policy.Checkpoint(dir="unused"),
     )
     serve_policy._warmup(policy, args)  # noqa: SLF001
     assert len(seen) == 2
     for obs in seen:
-        assert obs["observation/state"].shape == (16,)
+        assert obs["observation/joint"].shape == (16,)
         if arm != "both":
             assert obs["observation/pose"].shape == (20,)
 
@@ -79,7 +88,6 @@ def test_joint_state_warmup_preserves_pose_for_single_arm_expansion(arm):
 def test_deployment_yaml_restores_checkpoint_without_duplicate_model_selection():
     config = serve_policy.load_deploy_config(g2_config.DEFAULT_DEPLOY_CONFIG)
     assert config.policy.dir
-    assert config.policy.config is None
     assert config.port == 8001
 
 
@@ -87,7 +95,9 @@ def test_deploy_runtime_sets_cuda_without_overriding_the_environment(monkeypatch
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     deploy_config = g2_config.DEFAULT_DEPLOY_CONFIG
     serve_policy.load_deploy_config(deploy_config, apply_runtime=True)
-    assert os.environ["CUDA_VISIBLE_DEVICES"] == g2_config.read_yaml(deploy_config)["runtime"]["gpu"]
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == ",".join(
+        map(str, g2_config.read_yaml(deploy_config)["runtime"]["gpus"])
+    )
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
     serve_policy.load_deploy_config(deploy_config, apply_runtime=True)
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "3"
@@ -108,7 +118,7 @@ def test_cli_selects_deployment_yaml_and_applies_overrides(tmp_path, monkeypatch
     raw = g2_config.read_yaml(g2_config.DEFAULT_DEPLOY_CONFIG)
     raw["checkpoint"] = "/selected/50000"
     raw["server"].update(port=8111, warmup=False)
-    raw["runtime"]["gpu"] = "5"
+    raw["runtime"]["gpus"] = [5]
     path = tmp_path / "custom deployment.yaml"
     import yaml
 
@@ -130,12 +140,15 @@ def test_contract_warmup_omits_undeclared_pose():
         seen.append(obs.copy())
         return {"actions": np.zeros((8, 16), np.float32)}
 
-    contract = {
-        "state": {"space": "joint", "relative_to": None},
-        "action": {"space": "joint", "control_quantity": "joint_position", "relative_to": "current_measured_pose"},
-        "pose": {"base_to_parent": None},
-        "timing": {"history_steps": 1, "sample_hz": 30.0, "stride_steps": 1, "target_offset_steps": 0},
-    }
+    from g2_policy_tools.schema import resolve_policy
+
+    contract = resolve_policy(
+        {
+            "state": {"pose": {"enabled": False}, "joint": {"enabled": True}},
+            "action": {"pose": {"enabled": False}, "joint": {"enabled": True}},
+        },
+        horizon=50,
+    )
     policy = SimpleNamespace(
         metadata={
             "requires_joint_state": True,
@@ -154,3 +167,8 @@ def test_contract_warmup_omits_undeclared_pose():
     assert seen[0]["observation/joint"].shape == (16,)
     assert "observation/image" in seen[0]
     assert "observation/wrist_image_left" not in seen[0]
+
+
+def test_warmup_requires_the_checkpoint_contract():
+    with pytest.raises(ValueError, match="policy_contract"):
+        serve_policy._warmup_observation(SimpleNamespace(metadata={}))  # noqa: SLF001

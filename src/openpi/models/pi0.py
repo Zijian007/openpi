@@ -7,7 +7,6 @@ import jax
 import jax.numpy as jnp
 from typing_extensions import override
 
-from openpi.models import lora
 from openpi.models import model as _model
 from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
@@ -69,8 +68,7 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
-        paligemma_config = _gemma.get_config(config.paligemma_variant)
-        action_expert_config = _gemma.get_config(config.action_expert_variant)
+        paligemma_config, action_expert_config = config.gemma_configs()
         # TODO: rewrite gemma in NNX. For now, use bridge.
         llm = nnx_bridge.ToNNX(
             _gemma.Module(
@@ -87,9 +85,7 @@ class Pi0(_model.BaseModel):
                 pool_type="none",
                 scan=True,
                 dtype_mm=config.dtype,
-                lora_config=lora.LoRAConfig(rank=config.vision_lora_rank, alpha=config.vision_lora_alpha)
-                if config.vision_lora_rank
-                else None,
+                lora_config=config.vision_lora.numerical_config() if config.vision_lora is not None else None,
             )
         )
         img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)

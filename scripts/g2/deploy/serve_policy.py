@@ -14,7 +14,6 @@ import time
 @dataclasses.dataclass
 class Checkpoint:
     dir: str
-    config: str | None = None  # only for checkpoints predating the saved training snapshot
 
 
 @dataclasses.dataclass
@@ -32,13 +31,11 @@ class Args:
 
 def create_policy(args: Args):
     from openpi.adapters.g2 import policy as policy_adapter
-    from openpi.adapters.g2 import presets
     from openpi.models.rtc import RTCConfig
 
     if args.policy is None or not args.policy.dir:
         raise ValueError("G2 serving requires a checkpoint path (--policy.dir or deploy config)")
     return policy_adapter.create_trained_policy(
-        presets.get_config(args.policy.config) if args.policy.config is not None else None,
         args.policy.dir,
         default_prompt=args.default_prompt,
         rtc_config=RTCConfig(soft_overlap_steps=args.rtc_soft_overlap_steps, max_guidance_weight=args.rtc_guidance)
@@ -53,15 +50,9 @@ def _warmup_observation(policy) -> dict:
 
     from openpi.adapters.g2.contract import CAMERA_OBSERVATION_KEYS
     from openpi.adapters.g2.server import connection_metadata
-    from openpi.adapters.g2.transforms import make_g2_example
 
     if not policy.metadata.get("policy_contract"):
-        obs = make_g2_example()
-        if policy.metadata.get("requires_joint_state", False):
-            obs["observation/pose"] = obs["observation/state"]
-            obs["observation/state"] = np.zeros(16, dtype=np.float32)
-            obs["observation/joint"] = np.zeros(16, np.float32)
-        return obs
+        raise ValueError("G2 warmup requires the checkpoint policy_contract")
     wire = connection_metadata(policy.metadata)
     spec = wire["observation_spec"]
     blank = np.zeros((224, 224, 3), np.uint8)
@@ -80,7 +71,7 @@ def _warmup_observation(policy) -> dict:
     for key in spec["context_keys"]:
         if key in ("command_pose", "previous_command_pose", "object_pose", "start_pose"):
             obs[f"observation/{key}"] = pose.copy()
-        elif key in ("object_joint", "start_joint"):
+        elif key in ("object_joint", "start_joint", "command_joint"):
             obs[f"observation/{key}"] = joint.copy()
         elif key == "base_to_parent":
             obs["observation/base_to_parent"] = np.eye(4, dtype=np.float32)
@@ -132,29 +123,34 @@ def load_deploy_config(path: Path, *, apply_runtime: bool = False) -> Args:
     from openpi.adapters.g2.config import read_yaml
 
     raw = read_yaml(path)
-    allowed = {"checkpoint", "legacy_preset", "server", "runtime"}
+    allowed = {"checkpoint", "server", "runtime"}
     if set(raw) != allowed:
         raise ValueError(f"deployment config fields must be {sorted(allowed)}")
     server, runtime = raw["server"], raw["runtime"]
     server_keys = {"host", "port", "warmup", "record", "rtc", "rtc_soft_overlap_steps", "rtc_guidance"}
     if not isinstance(server, dict) or set(server) != server_keys:
         raise ValueError(f"server config fields must be {sorted(server_keys)}")
-    gpu = runtime.get("gpu") if isinstance(runtime, dict) else None
-    if not isinstance(runtime, dict) or set(runtime) != {"gpu"} or not isinstance(gpu, str) or not gpu.strip():
-        raise ValueError("runtime config fields must be gpu")
+    gpus = runtime.get("gpus") if isinstance(runtime, dict) else None
+    if (
+        not isinstance(runtime, dict)
+        or set(runtime) != {"gpus"}
+        or not isinstance(gpus, list)
+        or not gpus
+        or any(type(gpu) is not int or gpu < 0 for gpu in gpus)
+        or len(set(gpus)) != len(gpus)
+    ):
+        raise ValueError("runtime.gpus must be a nonempty list of unique nonnegative GPU IDs")
     checkpoint = raw["checkpoint"]
     if not isinstance(checkpoint, str) or not checkpoint.strip():
         raise ValueError("checkpoint must be a nonempty path")
-    if raw["legacy_preset"] is not None and not isinstance(raw["legacy_preset"], str):
-        raise ValueError("legacy_preset must be a string or null")
     if type(server["port"]) is not int or not 0 < server["port"] < 65536:
         raise ValueError("port must be an integer in [1, 65535]")
     for field in ("warmup", "record", "rtc"):
         if type(server[field]) is not bool:
             raise ValueError(f"{field} must be boolean")
     if apply_runtime:
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", gpu)
-    return Args(policy=Checkpoint(dir=checkpoint, config=raw["legacy_preset"]), **server)
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", ",".join(map(str, gpus)))
+    return Args(policy=Checkpoint(dir=checkpoint), **server)
 
 
 def cli(argv: list[str] | None = None) -> None:
