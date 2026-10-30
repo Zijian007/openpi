@@ -6,7 +6,7 @@ OpenPI 与 lerobot-finetune 环境、cache、W&B 和 checkpoint 都不互通。�
 
 ## 通信
 
-G2 使用 `g2-policy-protocol==0.6.0` 的 `g2.policy.v3`。控制量、观测、时间和 reset 都通过能力声明；见 [Policy 配置](policy.md#快照和部署)。
+G2 使用 `g2-policy-protocol==0.7.0` 的 `g2.policy.v3`。控制量、观测、时间和 reset 都通过能力声明；见 [Policy 配置](policy.md#快照和部署)。
 协议是可选依赖：`uv sync --extra g2` 从相邻 `../g2-policy-protocol` 安装。部署 wheel 时运行 `G2_PROTOCOL_WHEELS=/path/to/wheels bash scripts/g2/bootstrap.sh`，uv 仅忽略协议包的源码覆盖，从 wheel 目录解析固定版本；无需相邻协议源码。训练与服务脚本直接使用已安装的 `.venv/bin/python`。
 
 G2 入口是 `G2PolicyServer`。服务端把标准观测映射成模型内部的 `observation/*`；JPEG 解码、RTC、单臂扩展和图像处理留在适配层。默认 MessagePack，client 连接 `?encoding=json` 时整段会话用 JSON。域控和 GPU 需同版本并重启。

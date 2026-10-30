@@ -1,0 +1,144 @@
+# 路径相对于仓库根目录；Shell 默认读本文件，--config 选其他 YAML，CLI 可覆盖。
+schema_version: 7
+backend: openpi
+
+experiment:
+  name: Chapai_layer3_right
+  arm: right                   # both | left | right
+
+runtime:
+  gpus: [3]                  # 按顺序写入 CUDA_VISIBLE_DEVICES；已设置的环境变量优先
+  resume: false               # 恢复最新 checkpoint；新实验设 false
+
+wandb:
+  mode: auto                 # auto = 正常训练开启，smoke 关闭
+  project: G2_openpi
+
+
+data:
+  root: /home/zijianwang/data
+  image_size: [224, 224]
+  sources:
+    - path: vr/20261022_layer3_right_ChaPai/lerobot_v21
+      weight: 1
+    - path: vr/20261030_layer3_right_ChaPai/lerobot_v21
+      weight: 1
+  # LeRobot v2.1、30 Hz；state.* 为实测，action.* 为指令；同一行不保证物理时钟完全同步。
+  # *.pose：左臂10维 + 右臂10维，每臂 xyz(米) + rot6d(旋转矩阵前两列) + 夹爪(0开/1闭)。
+  # *.joint：左臂8维 + 右臂8维，每臂7关节角(rad) + 夹爪；pose 为 base_link 下的绝对 flange 位姿。
+  # 当前只预测所选臂及夹爪；数据中的 head/torso 不参与动作预测。
+  cameras: null              # null = 头部+所选臂腕部；如 [hand_right_color]；单臂不能选另一臂腕部
+
+policy:
+  # 输入由 data.cameras、state 和数据集任务文本共同决定。
+  # state 至少启用一支，可同时启用；action 恰好启用一支。夹爪始终保持绝对值。
+  state:
+    joint:
+      enabled: false
+      delta: false
+      method: null             # delta=true 时关节只能 component
+      reference:
+        source: null           # state | action
+        scope: null            # chunk | step；相对 source: state 需要 history_steps > 1
+    pose:
+      enabled: true            # 状态固定读取实测数据
+      coordinates:
+        parent_frame: base_link # base_link | arm_base_link；当前观测时刻固定参考系
+        ee_frame: flange       # flange；命名 TCP 需要标定
+        rotation: rot6d        # rot6d | quaternion（xyzw）| axis_angle
+      delta: false
+      method: null             # component = 分量差；se3 = inv(T_ref)@T，仅 pose
+      reference:
+        source: null
+        scope: null
+  action:
+    joint:
+      enabled: false
+      quantity: position       # position | velocity | torque；仅 position 支持 delta
+      source: action           # action 学习 action.* 指令；state 学习 state.* 实测
+      delta: false
+      method: null
+      reference:
+        source: null
+        scope: null
+    pose:
+      enabled: true
+      quantity: pose           # 末端位姿目标
+      source: action           # action 学习 action.* 指令；state 学习 state.* 实测
+      coordinates:
+        parent_frame: base_link # arm_base_link 需要数据集 state.arm_base
+        ee_frame: flange
+        rotation: rot6d
+      delta: true
+      method: component        # component | se3
+      reference:
+        source: state          # state 当前实测；action 当前指令
+        scope: chunk           # chunk 全部相对同一参考；step 首个相对 source，后续相对前一个目标
+      # 服务端还原绝对目标后发送；客户端不再叠加 delta。
+  timing:
+    sample_hz: 30.0          # 采样频率；低维量插值、图像取近邻
+    history_steps: 1         # 输入历史帧数；状态拼接、图像横向拼图，起点前重复首帧
+    action_horizon: 50       # 每次预测H帧，执行长度在客户端infer.execution_steps中设置
+    target_offset_steps: 0   # 首目标偏移；0从当前时刻开始，1从下一采样时刻开始
+    stride_steps: 1          # 目标间隔，以1/sample_hz秒为单位
+    # 第i帧目标=t+(target_offset_steps+i*stride_steps)/sample_hz，i从0开始。
+    # 默认右臂rot6d有效chunk=(50,10)，补到(50,32)；episode末尾不足时重复最后目标。
+
+model:
+  type: pi05
+  pretrained_path: gs://openpi-assets/checkpoints/pi05_base/params
+
+training:
+  batch_size: 8              # 全局 batch，多卡时须可被可见 GPU 数量整除
+  num_workers: 4
+  steps: 80000               # 目标总步数；续训时不是额外步数
+  seed: 42
+  log_interval: 50
+  save_interval: 4000
+  learning_rate: 2.5e-5
+
+
+backend_options:
+  openpi:
+    # 各模块独立选择 frozen | lora | full；LoRA 参数仅在 mode=lora 时生效。
+    finetuning:
+      vision:
+        mode: lora
+        lora:
+          rank: 32
+          alpha: 16.0        # alpha/rank；rslora 时 alpha/sqrt(rank)
+          targets: [attention]
+          rslora: false
+      language:
+        mode: frozen
+        lora:
+          rank: 16
+          alpha: 16.0
+          targets: [attention, ffn]
+          rslora: false
+      action_expert:
+        mode: full          # 动作投影与时间 MLP 同时参与训练
+        lora:
+          rank: 32
+          alpha: 32.0
+          targets: [attention, ffn]
+          rslora: false
+    run:
+      smoke: false          # batch=1、20 步、独立实验名，保留微调策略
+    model:
+      discrete_state_input: true
+    training:
+      fsdp_devices: 1
+      keep_period: 5000     # null = 仅保留最新 checkpoint
+      warmup_steps: 1000
+      decay_steps: null     # 新训练跟随 training.steps；续训保留原周期
+      decay_lr: 2.5e-6
+    checkpoints:
+      base_dir: ./checkpoints
+      assets_dir: ./assets
+      overwrite: false      # true 会删除同名实验目录；resume 优先
+    normalization:
+      mode: auto           # auto | force | skip；仅影响新训练
+      max_frames: null      # null = 全量；仅影响统计量计算
+    runtime:
+      mem_fraction: 0.9     # XLA_PYTHON_CLIENT_MEM_FRACTION 环境变量优先

@@ -6,8 +6,10 @@ to the config assets directory.
 """
 
 import dataclasses
+import math
 
 import numpy as np
+import torch
 import tqdm
 import tyro
 
@@ -19,8 +21,10 @@ import openpi.transforms as transforms
 
 
 class RemoveStrings(transforms.DataTransformFn):
+    """Keep only numerical state/action vectors, excluding images before collate."""
+
     def __call__(self, x: dict) -> dict:
-        return {k: v for k, v in x.items() if not np.issubdtype(np.asarray(v).dtype, np.str_)}
+        return {k: v for k, v in x.items() if k in ("state", "actions")}
 
 
 def create_torch_dataloader(
@@ -34,6 +38,8 @@ def create_torch_dataloader(
     if data_config.repo_id is None:
         raise ValueError("Data config must have a repo_id")
     dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
+    if hasattr(dataset, "normalization_dataset"):
+        dataset = dataset.normalization_dataset()
     dataset = _data_loader.TransformedDataset(
         dataset,
         [
@@ -44,17 +50,17 @@ def create_torch_dataloader(
         ],
     )
     if max_frames is not None and max_frames < len(dataset):
-        num_batches = max_frames // batch_size
-        shuffle = True
-    else:
-        num_batches = len(dataset) // batch_size
-        shuffle = False
+        selected = np.random.default_rng(0).choice(len(dataset), size=max_frames, replace=False)
+        dataset = torch.utils.data.Subset(dataset, selected.tolist())
+    num_batches = math.ceil(len(dataset) / batch_size)
     data_loader = _data_loader.TorchDataLoader(
         dataset,
         local_batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=shuffle,
+        shuffle=False,
         num_batches=num_batches,
+        drop_last=False,
+        framework="pytorch",  # CPU statistics also accept a final batch smaller than the GPU mesh.
     )
     return data_loader, num_batches
 
@@ -117,7 +123,7 @@ def compute_norm_stats(config: _config.TrainConfig, max_frames: int | None = Non
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    output_path = config.assets_dirs / (data_config.asset_id or data_config.repo_id)
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
 

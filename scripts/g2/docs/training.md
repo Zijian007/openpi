@@ -29,6 +29,21 @@ rsync -avP .../recorded/vr/lerobot_v21/ ~/openpi/data/<data.repo_id>/
 
 ## 改配置
 
+### 多数据集
+
+示例：[`configs/multi_dataset.yaml`](../configs/multi_dataset.yaml)，继承默认训练设置，只需修改路径、实验名和 GPU。每个 `data.sources[].path` 指向一份 v2.1 数据集；相对路径基于 `data.root`，默认 `./data`。不能同时写 `data.repo_id`；多源时拒绝 CLI 的 `--repo-id/--data-root`。
+
+```bash
+bash scripts/g2/train/train_pipeline.sh scripts/g2/configs/multi_dataset.yaml --dry-run
+bash scripts/g2/train/train_pipeline.sh scripts/g2/configs/multi_dataset.yaml --smoke
+```
+
+多源 dry-run 读取本地元数据和文件信息，打印每个源的实际采样占比，不解码视频。全部不写 weight 时自然混合；全部填写时按完整 episode 重复近似加权。`data.image_size` 可省略，填写时 Pi05 仅接受 `[224, 224]`。
+
+多源统计量写入 `mix-<指纹>` 资产目录，按展开分布计算，norm 阶段不解码视频。checkpoint 保存 asset_id，部署无需原始数据。续训校验混合身份，复用 checkpoint 统计量，但不保证数据顺序接续。
+
+需安装 `g2-policy-protocol==0.7.0` 并同步升级训练和部署代码。旧单源 checkpoint 的 asset_id 仍为原 repo_id。完整规则见[多数据集与图像尺寸](../../../../g2-policy-protocol/docs/policy-config.md#多数据集与图像尺寸)。
+
 先改这几项就能跑：`experiment.name`、`experiment.arm`、`data.root`、`data.repo_id`、`runtime.gpus`。
 `policy` 默认已是 TeaPi：右臂实测绝对位姿，学习指令相对当前实测的分量差。改作差/坐标/历史见字段速查；自定义 YAML 只写要覆盖的叶子，其余继承 `configs/train.yaml`。本仓库的训练入口使用 `schema_version: 7`、`backend: openpi`；版本、字段翻译与 checkpoint 快照由 `openpi.adapters.g2.training_config` 维护。配置版本独立于线上 `g2.policy.v3`；共享包只约束 `policy` 的状态、动作和时序语义。
 
@@ -68,6 +83,8 @@ CUDA_VISIBLE_DEVICES=0,1 bash scripts/g2/train/train_full.sh   # YAML 先设 bac
 
 `train_pipeline.sh` 按 YAML 训练；`train_smoke.sh` 打开短跑；`train_full.sh` 把 vision/language/action_expert 全设为 full；`compute_norm_stats.sh` 只算统计量。四个入口都接受 `--config PATH`。新实验默认不覆盖已有目录。
 
+启用 W&B 在线记录时，入口在计算 norm stats、创建 checkpoint 目录和加载模型前，先用只读账号查询检查服务连接与登录，整个检查最多等待 20 秒，不创建测试 run。失败立即退出，提示检查当前终端（尤其 tmux）的代理变量和 W&B 登录；通过后才继续。`--dry-run`、`--norm-only`、关闭 W&B 或使用离线模式时跳过联网检查。
+
 ## 续训
 
 目标步数是总数，不是再加多少步。
@@ -97,6 +114,8 @@ backend_options:
 ```
 
 视觉 LoRA 只支持 `attention`；语言和动作专家可选 `attention` / `ffn`。`rslora: true` 时缩放为 alpha/sqrt(rank)。语言或动作专家用 LoRA 时关闭 EMA。改 LoRA 结构要换 `experiment.name`，不能拿旧优化器续训。当前默认会存到 `checkpoints/pi05_g2_vr_vlm_lora_action_full_right/<name>/`。
+
+配置名保留已有预设名称；未命中预设时使用 `pi05_g2_vr_vision_<模式>_language_<模式>_action_<模式>`，单臂追加 `_left` 或 `_right`。例如视觉 LoRA、语言冻结、动作专家全参的右臂配置名为 `pi05_g2_vr_vision_lora_language_frozen_action_full_right`。checkpoint 和共享 assets 使用同一配置名，`experiment.name` 仅用于 checkpoint 的下一层目录；混合数据的 assets 子目录仍为 `mix-<指纹>`。已有目录不会自动重命名，旧自动拼接名称的实验续训前需对齐目录名称。
 
 ## 单臂
 

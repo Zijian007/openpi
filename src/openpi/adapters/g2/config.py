@@ -16,6 +16,8 @@ from g2_policy_protocol import protocol
 from g2_policy_protocol.data import policy as policy_config
 from g2_policy_protocol.data.dataset import action_label_column
 from g2_policy_protocol.data.encoding import action_dimensions
+from g2_policy_protocol.data.sources import image_size
+from g2_policy_protocol.data.sources import resolve_sources
 import yaml
 
 from openpi.adapters.g2 import training_config as training_schema
@@ -90,7 +92,7 @@ SCHEMA = {
         for module in ("vision", "language", "action_expert")
     },
     "run": {"smoke"},
-    "data": {"root", "repo_id", "cameras"},
+    "data": None,
     "policy": None,
     "model": {"discrete_state_input", "params_path"},
     "training": {
@@ -180,6 +182,15 @@ def load_settings(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
         raw["policy"][group]["pose"]["coordinates"] = coordinates
     if path.resolve() != DEFAULT_CONFIG.resolve():
         override = read_yaml(path)
+        if "sources" in override.get("data", {}):
+            # Replace the dataset selection; keep the other template defaults.
+            raw["data"].pop("repo_id", None)
+            raw["data"]["root"] = override["data"].get("root", "./data")
+            raw["data"].update(copy.deepcopy(override["data"]))
+            override = copy.deepcopy(override)
+            override.pop("data")
+        elif "image_size" in override.get("data", {}):
+            raw["data"]["image_size"] = override["data"]["image_size"]
         policy_config.merge(raw, override)
     return training_schema.to_native(raw)
 
@@ -187,6 +198,8 @@ def load_settings(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
 def resolve_settings(settings: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(settings)
     overrides = dict(overrides)
+    if "sources" in settings["data"] and any(key in overrides for key in ("repo_id", "data_root")):
+        raise ValueError("For data.sources, set paths in YAML; --repo-id and --data-root are not supported")
     for module in ("vision", "language", "action_expert"):
         if f"{module}_mode" in overrides:
             result["finetuning"][module]["mode"] = overrides.pop(f"{module}_mode")
@@ -224,14 +237,22 @@ def needs_joint_state(policy: dict[str, Any]) -> bool:
 
 
 def selected_cameras(settings: dict[str, Any]) -> tuple[str, ...]:
-    return cameras_for_arm(settings["experiment"]["arm"], settings["data"]["cameras"])
+    return cameras_for_arm(settings["experiment"]["arm"], settings["data"].get("cameras"))
+
+
+def asset_id(settings):
+    if "sources" not in settings["data"]:
+        return settings["data"]["repo_id"]
+    if "mixture" not in settings:
+        raise ValueError("Multi-source training needs resolved mixture metadata; run scripts/g2/train/train_pipeline.sh")
+    return settings["mixture"]["asset_id"]
 
 
 def training_config_name(settings: dict[str, Any]) -> str:
     modes = finetuning_modes(settings)
     name = MODEL_CONFIG_NAMES.get(
         (modes["language"], modes["action_expert"]),
-        f"pi05_g2_vr_v{modes['vision']}_l{modes['language']}_a{modes['action_expert']}",
+        f"pi05_g2_vr_vision_{modes['vision']}_language_{modes['language']}_action_{modes['action_expert']}",
     )
     arm = settings["experiment"]["arm"]
     return name if arm == "both" else f"{name}_{arm}"
@@ -248,7 +269,12 @@ def _validate_fields(value, schema, path="settings"):
 
 
 def validate_settings(settings: dict[str, Any]) -> None:
-    _validate_fields(settings, SCHEMA)
+    schema = SCHEMA | ({"mixture": None} if "mixture" in settings else {})
+    _validate_fields(settings, schema)
+    resolve_sources(settings["data"], base_dir=PROJECT_ROOT)
+    size = image_size(settings["data"])
+    if size is not None and size != (224, 224):
+        raise ValueError("OpenPI Pi05 requires data.image_size: [224, 224]")
     if settings["schema_version"] != training_schema.VERSION:
         raise ValueError("New training configs require schema_version: 7")
     policy_config.validate_policy(settings["policy"])
@@ -335,8 +361,6 @@ def validate_settings(settings: dict[str, Any]) -> None:
     ):
         raise ValueError("runtime.gpus must be a nonempty list of unique nonnegative GPU IDs")
     for section, key in (
-        ("data", "root"),
-        ("data", "repo_id"),
         ("model", "params_path"),
         ("checkpoints", "base_dir"),
         ("checkpoints", "assets_dir"),
@@ -347,10 +371,7 @@ def validate_settings(settings: dict[str, Any]) -> None:
     name = settings["experiment"]["name"]
     if not isinstance(name, str) or (name and (name in (".", "..") or "/" in name or "\\" in name)):
         raise ValueError("experiment.name must be a directory name, or an empty string for an automatic name")
-    repo = Path(settings["data"]["repo_id"])
-    if repo.is_absolute() or ".." in repo.parts:
-        raise ValueError("data.repo_id must be relative to data.root without '..'")
-    cameras = settings["data"]["cameras"]
+    cameras = settings["data"].get("cameras")
     if cameras is not None and (not isinstance(cameras, list) or any(not isinstance(item, str) for item in cameras)):
         raise ValueError("data.cameras must be null or a list of camera names")
     selected_cameras(settings)
@@ -401,9 +422,16 @@ def build_train_config(
         if state_dimension(settings) > 32
         else base.model.max_token_len,
     )
+    sources = resolve_sources(settings["data"], base_dir=PROJECT_ROOT)
+    asset = asset_id(settings)
     data = dataclasses.replace(
         base.data,
-        repo_id=settings["data"]["repo_id"],
+        repo_id=settings["data"].get("repo_id", asset),
+        sources=sources if "sources" in settings["data"] else None,
+        data_root=sources[0]["path"] if "sources" not in settings["data"] else None,
+        mixture=settings.get("mixture"),
+        seed=train["seed"],
+        assets=dataclasses.replace(base.data.assets, asset_id=asset),
         policy=copy.deepcopy(policy),
         cameras=selected_cameras(settings),
     )

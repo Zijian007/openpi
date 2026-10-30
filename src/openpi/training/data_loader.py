@@ -396,6 +396,7 @@ class TorchDataLoader:
         num_workers: int = 0,
         seed: int = 0,
         framework: str = "jax",
+        drop_last: bool = True,
     ):
         """Create a PyTorch data loader.
 
@@ -411,11 +412,12 @@ class TorchDataLoader:
             num_workers: The number of worker processes to use. If zero, the data loader will
                 execute in the main process.
             seed: The seed to use for shuffling the data.
+            drop_last: Drop incomplete batches during training; normalization keeps them.
         """
         if jax.process_count() > 1:
             raise NotImplementedError("Data loading with multiple processes is not supported.")
 
-        if len(dataset) < local_batch_size:
+        if drop_last and len(dataset) < local_batch_size:
             raise ValueError(f"Local batch size ({local_batch_size}) is larger than the dataset size ({len(dataset)}).")
 
         # Store sharding - None for PyTorch, JAX sharding for JAX
@@ -444,7 +446,7 @@ class TorchDataLoader:
             persistent_workers=num_workers > 0,
             collate_fn=_collate_fn,
             worker_init_fn=_worker_init_fn,
-            drop_last=True,
+            drop_last=drop_last,
             generator=generator,
         )
 

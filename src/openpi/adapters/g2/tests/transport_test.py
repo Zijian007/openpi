@@ -61,7 +61,7 @@ def test_transport_warmup_finishes_before_binding_port():
 
     with (
         patch("openpi.adapters.g2.server._warmup_jpeg_transport", side_effect=lambda: events.append("warmup")),
-        patch("websockets.asyncio.server.serve", side_effect=bind),
+        patch("g2_policy_protocol.server.serve", side_effect=bind),
     ):
         asyncio.run(G2PolicyServer(None).run())
     assert events == ["warmup", "bind", "listen", "serve"]

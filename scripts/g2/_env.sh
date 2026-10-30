@@ -1,11 +1,11 @@
 # Shared path / HF caches for G2 OpenPI scripts.
-# Parallel to ~/work/G2_pi/scripts/_env.sh — do NOT source G2_pi's env.
+# Parallel to lerobot-finetune/scripts/_env.sh — do NOT source lerobot-finetune's env.
 # shellcheck shell=bash
 
 G2_OPENPI_PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Dataset root for OpenPI's pinned LeRobot 0.1: looks up $HF_LEROBOT_HOME/<repo_id>
-# Keep separate from G2_pi's ~/.cache/huggingface/lerobot (v3).
+# Keep separate from lerobot-finetune's v3 conversion cache (.cache/datasets/v3).
 export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-${G2_OPENPI_PROJECT_ROOT}/data}"
 
 # OpenPI checkpoint / tokenizer cache (pi05_base, paligemma tokenizer, …).

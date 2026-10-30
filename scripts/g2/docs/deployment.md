@@ -22,7 +22,7 @@ smoke 客户端将监听地址 `0.0.0.0` / `::` 换为本机回环地址；连�
 相对配置路径以仓库根目录为基准，绝对路径也支持。
 
 ```bash
-# configs/deploy.yaml 默认 :8001，与 LeRobot 同时开时改其中一份 YAML
+# configs/deploy.yaml 默认 :8001；LeRobot 默认 :8002，可同时运行
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/deploy/serve_policy.sh \
   --policy.dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
 # 省略 --policy.dir 使用 configs/deploy.yaml 的 checkpoint；训练语义和 arm 从快照恢复

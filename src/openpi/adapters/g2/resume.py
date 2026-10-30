@@ -36,6 +36,8 @@ def resolve_resume(settings, extra_args, checkpoint_dir: Path):
         differences.append("model settings")
     if old["data"] != settings["data"]:
         differences.append("data settings")
+    if old.get("mixture") != settings.get("mixture"):
+        differences.append("mixture fingerprint")
     if (
         g2_config.policy_semantics(old) != g2_config.policy_semantics(settings)
         or old["experiment"]["arm"] != settings["experiment"]["arm"]
@@ -67,7 +69,7 @@ def resolve_resume(settings, extra_args, checkpoint_dir: Path):
         raise ValueError(f"Cannot resume with changed {', '.join(differences)}; use a new experiment.name")
     if settings["training"]["num_train_steps"] <= int(checkpoint.name):
         raise ValueError(f"Target num_train_steps must exceed checkpoint step {checkpoint.name}")
-    norm_path = checkpoint / "assets" / old["data"]["repo_id"] / "norm_stats.json"
+    norm_path = checkpoint / "assets" / g2_config.asset_id(old) / "norm_stats.json"
     if not norm_path.is_file():
         raise FileNotFoundError(f"Resume requires checkpoint normalization stats: {norm_path}")
     resolved = copy.deepcopy(old)

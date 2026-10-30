@@ -42,7 +42,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-g2 = ["g2-policy-protocol==0.6.0"]
+g2 = ["g2-policy-protocol==0.7.0"]
 
 
 [project.urls]

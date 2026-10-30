@@ -23,6 +23,13 @@ from train_pipeline import normalize_child_status
 from openpi.adapters.g2 import config as g2_config
 
 
+@pytest.fixture(autouse=True)
+def wandb_check():
+    # Pipeline tests never contact an external logging service.
+    with patch("train_pipeline.check_wandb") as check:
+        yield check
+
+
 def resolve(argv):
     args, _ = _parse_argv(["--no-resume", *argv])
     with patch.dict(os.environ, {}, clear=True):
@@ -51,6 +58,41 @@ def test_yaml_defaults_and_cli_override():
     assert settings["training"]["batch_size"] == 3
     assert settings["training"]["num_train_steps"] == 40000
     assert settings["checkpoints"]["overwrite"] is False
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_wandb_is_checked_before_norm_or_training(tmp_path, wandb_check, fails):
+    events = []
+
+    def check(**kwargs):
+        assert kwargs["enabled"]
+        events.append("wandb")
+        if fails:
+            raise RuntimeError("W&B preflight failed")
+
+    wandb_check.side_effect = check
+    args = ["--no-resume", "--wandb", "on", "--checkpoint-base-dir", str(tmp_path / "checkpoints"),
+            "--assets-base-dir", str(tmp_path / "assets")]
+    with patch("train_pipeline._check_dataset"), patch(
+        "train_pipeline._run_command", side_effect=lambda command: events.append(command[-1])
+    ):
+        if fails:
+            with pytest.raises(RuntimeError, match="W&B preflight failed"):
+                main(args)
+            assert events == ["wandb"]
+        else:
+            main(args)
+            assert events == ["wandb", "norm", "train"]
+    assert not (tmp_path / "checkpoints").exists()
+    assert not (tmp_path / "assets").exists()
+
+
+@pytest.mark.parametrize("flags", [["--dry-run"], ["--norm-only"]])
+def test_preview_and_norm_only_skip_wandb_check(tmp_path, wandb_check, flags):
+    with patch("train_pipeline._check_dataset"), patch("train_pipeline._run_command"):
+        main(["--no-resume", "--checkpoint-base-dir", str(tmp_path / "checkpoints"),
+              "--assets-base-dir", str(tmp_path / "assets"), *flags])
+    wandb_check.assert_not_called()
 
 
 def test_common_cli_and_single_entry_validation():

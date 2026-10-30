@@ -1,0 +1,17 @@
+# 覆盖 train.yaml 的数据选择；先修改路径、实验名和 GPU。
+schema_version: 7
+backend: openpi
+experiment:
+  name: g2_multi_dataset
+data:
+  root: ./data
+  cameras: null
+  image_size: [224, 224]
+  sources:
+    - path: vr/task_a/lerobot_v21
+      weight: 3
+    - path: vr/task_b/lerobot_v21
+      weight: 1
+runtime:
+  gpus: [0]
+  resume: false

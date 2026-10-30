@@ -18,6 +18,7 @@ import yaml
 
 from openpi.adapters.g2 import config as g2_config
 from openpi.adapters.g2.training_config import to_native
+from openpi.shared.wandb_preflight import check_wandb
 
 PROJECT_ROOT = g2_config.PROJECT_ROOT
 
@@ -97,7 +98,7 @@ def _resolve(args):
         stamp = dt.datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S_%f")
         settings["experiment"]["name"] = f"{prefix}_{stamp}"
     for section, key in (("data", "root"), ("checkpoints", "base_dir"), ("checkpoints", "assets_dir")):
-        settings[section][key] = str(resolve_under_project(settings[section][key]))
+        settings[section][key] = str(resolve_under_project(settings[section].get(key, "./data")))
     if "://" not in settings["model"]["params_path"]:
         settings["model"]["params_path"] = str(resolve_under_project(settings["model"]["params_path"]))
     return settings
@@ -110,7 +111,16 @@ def _setup_runtime(settings):
 
 
 def _check_dataset(settings):
-    root = Path(settings["data"]["root"]) / settings["data"]["repo_id"]
+    from g2_policy_protocol.data.sources import resolve_sources
+
+    for source in resolve_sources(settings["data"], base_dir=PROJECT_ROOT):
+        try:
+            _check_source(Path(source["path"]), settings)
+        except (OSError, ValueError) as error:
+            raise type(error)(f"Source {source['name']}: {error}") from error
+
+
+def _check_source(root, settings):
     for name in ("info.json", "episodes_stats.jsonl"):
         if not (root / "meta" / name).is_file():
             raise FileNotFoundError(f"LeRobot v2.1 dataset file missing: {root / 'meta' / name}")
@@ -140,7 +150,7 @@ def _run_stage(stage: str, snapshot: Path):
         from compute_norm_stats import compute_norm_stats
 
         compute_norm_stats(config, max_frames=settings["normalization"]["max_frames"])
-        signature = config.assets_dirs / settings["data"]["repo_id"] / "g2_norm_config.yaml"
+        signature = config.assets_dirs / g2_config.asset_id(settings) / "g2_norm_config.yaml"
         signature.write_text(yaml.safe_dump(_norm_signature(settings), sort_keys=False))
     else:
         from train import main as train_main
@@ -181,10 +191,12 @@ def _run_command(command: list[str]) -> None:
 def _norm_signature(settings):
     return {
         "data_root": settings["data"]["root"],
-        "repo_id": settings["data"]["repo_id"],
+        "repo_id": settings["data"].get("repo_id"),
         "arm": settings["experiment"]["arm"],
         "policy": g2_config.policy_semantics(settings),
         "cameras": list(g2_config.selected_cameras(settings)),
+        **({"mixture": settings["mixture"]} if "mixture" in settings else {}),
+        **({"image_size": settings["data"]["image_size"]} if "image_size" in settings["data"] else {}),
     }
 
 
@@ -196,8 +208,14 @@ def main(argv: list[str] | None = None) -> None:
     settings = _resolve(args)
     g2_config.validate_extra_args(extra_args)
     _setup_runtime(settings)
+    if "sources" in settings["data"]:
+        from openpi.adapters.g2.mixture import prepare_mixture
+
+        sources = prepare_mixture(settings, base_dir=PROJECT_ROOT)
+        for source, ratio in zip(sources, settings["mixture"]["proportions"], strict=True):
+            print(f"Source {source['name']}: {source['path']} (actual share {ratio:.2%})")
     name = g2_config.training_config_name(settings)
-    norm_path = Path(settings["checkpoints"]["assets_dir"]) / name / settings["data"]["repo_id"] / "norm_stats.json"
+    norm_path = Path(settings["checkpoints"]["assets_dir"]) / name / g2_config.asset_id(settings) / "norm_stats.json"
     ckpt_dir = Path(settings["checkpoints"]["base_dir"]) / name / settings["experiment"]["name"]
     norm_only = getattr(args, "norm_only", False)
     dry_run = getattr(args, "dry_run", False)
@@ -209,7 +227,7 @@ def main(argv: list[str] | None = None) -> None:
         from openpi.adapters.g2.resume import resolve_resume
 
         settings, extra_args, resume_checkpoint, resume_training = resolve_resume(settings, extra_args, ckpt_dir)
-        norm_path = resume_checkpoint / "assets" / settings["data"]["repo_id"] / "norm_stats.json"
+        norm_path = resume_checkpoint / "assets" / g2_config.asset_id(settings) / "norm_stats.json"
         skip_norm = True
     else:
         skip_norm = should_skip_norm(settings["normalization"]["mode"], norm_path)
@@ -229,7 +247,10 @@ def main(argv: list[str] | None = None) -> None:
     print("Derived policy contract:")
     print(yaml.safe_dump(g2_config.describe_policy(settings), sort_keys=False, allow_unicode=True), flush=True)
     if dry_run:
-        print("[dry-run] No data access, downloads, normalization, or training.")
+        if "sources" in settings["data"]:
+            print("[dry-run] Read mixture metadata only; no video decoding, downloads, normalization, or training.")
+        else:
+            print("[dry-run] No data access, downloads, normalization, or training.")
         print(f"[1/2] {'reuse' if skip_norm else 'compute'} norm stats using the resolved config above")
         if not norm_only:
             print("[2/2] train using the same resolved config")
@@ -243,6 +264,11 @@ def main(argv: list[str] | None = None) -> None:
         raise FileExistsError(f"Experiment exists: {ckpt_dir}; choose a new experiment.name or use --resume")
     if skip_norm and not norm_only and not norm_path.is_file():
         raise FileNotFoundError(f"Cannot skip normalization: {norm_path} does not exist")
+    if not norm_only:
+        check_wandb(
+            enabled=settings["wandb"]["mode"] == "on"
+            or (settings["wandb"]["mode"] == "auto" and not settings["run"]["smoke"]),
+        )
     with tempfile.TemporaryDirectory(prefix="g2-train-", dir="/tmp") as temporary:
         snapshot = Path(temporary) / g2_config.CHECKPOINT_CONFIG
         snapshot.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True))

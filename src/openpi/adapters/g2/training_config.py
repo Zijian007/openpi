@@ -11,6 +11,7 @@ TRAINING_FIELDS = {
 }
 
 OPENPI_OPTIONS = {
+    "mixture": {"asset_id", "fingerprint", "proportions", "plan", "lengths"},
     "finetuning": None,
     "run": {"smoke"},
     "model": {"discrete_state_input"},
