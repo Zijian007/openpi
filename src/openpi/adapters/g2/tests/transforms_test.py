@@ -1,8 +1,8 @@
 import copy
 import pickle
 
-from g2_policy_tools.geometry import ActionCodec
-from g2_policy_tools.schema import resolve_policy
+from g2_policy_protocol.data.encoding import ActionCodec
+from g2_policy_protocol.data.policy import resolve_policy
 import numpy as np
 import pytest
 

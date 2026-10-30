@@ -58,7 +58,7 @@ def test_configured_camera_subset_and_state_source_reach_policy(requires_joint_s
     metadata, response = websocket.sent
     assert metadata["required_cameras"] == ["head_color"]
     assert metadata["requires_joint_state"] == requires_joint_state
-    assert metadata["execution_steps"] == 10
+    assert "execution_steps" not in metadata
     assert response["type"] == protocol.ACTION_TYPE
     keys = {"observation/state", "observation/pose", "observation/image", "prompt"}
     np.testing.assert_array_equal(seen[0]["observation/pose"], np.ones(20, np.float32))
@@ -174,7 +174,7 @@ def test_v3_handshake_does_not_advertise_client_execution_budget():
     contract = connection_metadata({"policy_contract": settings, "execution_steps": 10, "action_horizon": 50})
     assert "execution_steps" not in contract
     handshake = protocol.build_metadata(**contract)
-    assert handshake["protocol"] == protocol.v3.PROTOCOL
+    assert handshake["protocol"] == protocol.PROTOCOL
     assert "execution_steps" not in handshake
 
 

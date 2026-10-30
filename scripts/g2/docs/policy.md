@@ -4,9 +4,9 @@
 
 `policy` 字段候选、作差和采样规则见[公共配置速查](../../../../g2-policy-protocol/docs/policy-config.md)。本页只写 OpenPI 怎么读这份配置。
 
-修改 [configs/train.yaml](../configs/train.yaml)。自定义 YAML 是对它的叶字段覆盖，须带 `schema_version: 6`。在默认 `action.pose` 上只写 `delta: false` 会清空继承的 method 和 reference。
+修改 [configs/train.yaml](../configs/train.yaml)。自定义 YAML 是对它的叶字段覆盖，使用 `schema_version: 7`。在默认 `action.pose` 上只写 `delta: false` 会清空继承的 method 和 reference。
 
-State 同时启用两支时，各历史时刻按 pose → joint 拼接，再按最旧到最新展开；选臂由 `experiment.arm` 决定。宽于 32 维须 `model.discrete_state_input: true`。默认右臂 action pose 有效块为 (50,10)，入模型补到 (50,32)。速度缺列时可由对应来源轨迹差分，力矩须真实记录。转换矩阵由入口补齐并写入 checkpoint；数据集标定文件尚未自动加载。
+State 同时启用两支时，各历史时刻按 pose → joint 拼接，再按最旧到最新展开；选臂由 `experiment.arm` 决定。宽于 32 维须 `backend_options.openpi.model.discrete_state_input: true`。默认右臂 action pose 有效块为 (50,10)，入模型补到 (50,32)。速度缺列时可由对应来源轨迹差分，力矩须真实记录。`state.pose.coordinates.parent_frame` 和 `action.pose.coordinates.parent_frame` 分别选择 base_link（默认）或 arm_base_link；后者读取实测 `state.arm_base`，历史与整段 action 使用当前观测时刻的参考系。TCP 标定仍须显式配置。
 
 ## 快照和部署
 

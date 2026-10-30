@@ -53,6 +53,14 @@ def test_yaml_defaults_and_cli_override():
     assert settings["checkpoints"]["overwrite"] is False
 
 
+def test_common_cli_and_single_entry_validation():
+    with patch.object(g2_config, "validate_settings", wraps=g2_config.validate_settings) as validate:
+        settings = resolve(["--steps", "40000", "--learning-rate", "1e-5"])
+    validate.assert_called_once()
+    assert settings["training"]["num_train_steps"] == 40000
+    assert settings["training"]["peak_lr"] == 1e-5
+
+
 def test_smoke_overrides_yaml_but_explicit_cli_wins():
     settings = resolve(["--smoke"])
     assert settings["training"]["batch_size"] == 1
@@ -263,7 +271,7 @@ def test_dynamic_parent_in_either_pose_group_requires_recorded_transform(tmp_pat
     config = tmp_path / "dynamic.yaml"
     config.write_text(
         yaml.safe_dump(
-            {"policy": {group: {"pose": {"coordinates": {"base_to_parent": "observation"}}}}}
+            {"policy": {group: {"pose": {"coordinates": {"parent_frame": "arm_base_link"}}}}}
         )
     )
     settings = resolve(["--config", str(config), "--data-root", str(tmp_path)])
@@ -274,9 +282,9 @@ def test_dynamic_parent_in_either_pose_group_requires_recorded_transform(tmp_pat
     info = {"codebase_version": "v2.1", "features": features, "fps": 30.0}
     (meta / "info.json").write_text(json.dumps(info))
     (meta / "episodes_stats.jsonl").touch()
-    with pytest.raises(ValueError, match="reference.base_to_parent"):
+    with pytest.raises(ValueError, match="state.arm_base"):
         _check_dataset(settings)
-    features["reference.base_to_parent"] = {}
+    features["state.arm_base"] = {"shape": [9]}
     (meta / "info.json").write_text(json.dumps(info))
     _check_dataset(settings)
 
@@ -293,7 +301,7 @@ def test_resume_checks_freezing_and_only_active_lora_settings(
     tmp_path, current_mode, previous_mode, previous_rank, error
 ):
     config = tmp_path / "experiment.yaml"
-    config.write_text(f"finetuning:\n  vision:\n    mode: {current_mode}\n")
+    config.write_text(f"backend_options:\n  openpi:\n    finetuning:\n      vision:\n        mode: {current_mode}\n")
     args = [
         "--config",
         str(config),
@@ -330,13 +338,13 @@ def test_resume_checks_freezing_and_only_active_lora_settings(
             assert run.call_count == 1
 
 
-def test_worker_snapshot_uses_v6_tree_for_both_stages(tmp_path):
+def test_worker_snapshot_uses_public_tree_for_both_stages(tmp_path):
     captured = []
 
     def run(command):
         path = Path(command[command.index("--resolved-config") + 1])
         payload = g2_config.read_yaml(path)
-        assert payload["settings"]["schema_version"] == 6
+        assert payload["settings"]["schema_version"] == 7
         assert payload["settings"]["policy"]["state"].keys() == {"joint", "pose"}
         assert payload["settings"]["policy"]["action"].keys() == {"joint", "pose"}
         captured.append(g2_config.normalize_settings(payload["settings"]))
@@ -347,7 +355,11 @@ def test_worker_snapshot_uses_v6_tree_for_both_stages(tmp_path):
     assert captured[0] == captured[1]
 
 
-def test_resume_rejects_changed_branch_semantics_before_launching_worker(tmp_path):
+@pytest.mark.parametrize("override", [
+    {"action": {"pose": {"reference": {"scope": "step"}}}},
+    {"action": {"pose": {"coordinates": {"parent_frame": "arm_base_link"}}}},
+])
+def test_resume_rejects_changed_branch_semantics_before_launching_worker(tmp_path, override):
     args = [
         "--checkpoint-base-dir",
         str(tmp_path / "checkpoints"),
@@ -369,14 +381,18 @@ def test_resume_rejects_changed_branch_semantics_before_launching_worker(tmp_pat
         main(args)
         assert run.call_count == 1
     selected = tmp_path / "step.yaml"
-    selected.write_text("policy:\n  action:\n    pose:\n      reference:\n        scope: step\n")
+    selected.write_text(yaml.safe_dump({"policy": override}))
     with patch("train_pipeline._check_dataset"), patch("train_pipeline._run_command") as run:
         with pytest.raises(ValueError, match="policy semantics"):
             main([*args, "--config", str(selected)])
         run.assert_not_called()
 
 
-def test_branch_changes_invalidate_normalization_cache(tmp_path):
+@pytest.mark.parametrize("override", [
+    {"state": {"joint": {"enabled": True}}},
+    {"state": {"pose": {"coordinates": {"parent_frame": "arm_base_link"}}}},
+])
+def test_branch_changes_invalidate_normalization_cache(tmp_path, override):
     args = ["--no-resume", "--assets-base-dir", str(tmp_path), "--norm", "auto"]
     settings = resolve(args)
     norm = tmp_path / g2_config.training_config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
@@ -384,7 +400,7 @@ def test_branch_changes_invalidate_normalization_cache(tmp_path):
     norm.write_text("{}")
     norm.with_name("g2_norm_config.yaml").write_text(yaml.safe_dump(_norm_signature(settings)))
     selected = tmp_path / "combined.yaml"
-    selected.write_text("policy:\n  state:\n    joint:\n      enabled: true\n")
+    selected.write_text(yaml.safe_dump({"policy": override}))
     for extra, expected in ((["--log-interval", "10"], "skip=True"), (["--config", str(selected)], "skip=False")):
         out = StringIO()
         with redirect_stdout(out):
@@ -409,12 +425,12 @@ def test_resume_force_uses_checkpoint_without_shared_stats(resume_experiment):
         assert command[-1] == "train"
         payload = g2_config.read_yaml(Path(command[command.index("--resolved-config") + 1]))
         assert payload["resume_checkpoint"] == str(checkpoint)
-        assert payload["settings"]["training"]["decay_steps"] == settings["training"]["num_train_steps"]
+        assert payload["settings"]["backend_options"]["openpi"]["training"]["decay_steps"] == settings["training"]["num_train_steps"]
         captured.append(payload)
     with patch("train_pipeline._check_dataset"), patch("train_pipeline._run_command", side_effect=run):
         main([*args, "--num-train-steps", "60000"])
     assert len(captured) == 1
-    assert captured[0]["settings"]["training"]["num_train_steps"] == 60000
+    assert captured[0]["settings"]["training"]["steps"] == 60000
 
 
 @pytest.mark.parametrize("missing", ["configuration", "statistics", "complete checkpoint"])
@@ -476,7 +492,7 @@ def test_saved_snapshot_freezes_effective_schedule_and_optimizer(resume_experime
     settings["checkpoints"]["resume"] = False
     cfg = g2_config.build_train_config(settings, ("--optimizer.b1", "0.8"))
     saved = yaml.safe_load(cfg.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])
-    assert saved["settings"]["training"]["decay_steps"] is None
+    assert saved["settings"]["backend_options"]["openpi"]["training"]["decay_steps"] is None
     assert saved["training_state_config"]["lr_schedule"]["decay_steps"] == 50000
     assert saved["training_state_config"]["optimizer"]["b1"] == .8
     cfg2 = g2_config.build_train_config(settings, resume_training=saved["training_state_config"])

@@ -1,7 +1,7 @@
 import copy
 from types import SimpleNamespace
 
-from g2_policy_tools.geometry import action_dimensions
+from g2_policy_protocol.data.encoding import action_dimensions
 import numpy as np
 import pytest
 import torch
@@ -198,10 +198,9 @@ def test_joint_state_with_independent_pose_reference_round_trips_rtc(tmp_path, m
     from openpi.adapters.g2.config import POLICY_DEFAULTS
     from openpi.adapters.g2.data import LeRobotG2DataConfig
     from openpi.adapters.g2.tests.geometry_test import poses
-    from openpi.training import config as native_config
-
     from openpi.adapters.g2.tests.geometry_test import set_encoding
     from openpi.adapters.g2.tests.geometry_test import set_state_space
+    from openpi.training import config as native_config
 
     settings = copy.deepcopy(POLICY_DEFAULTS)
     set_state_space(settings, "joint")
@@ -258,10 +257,9 @@ def test_rtc_other_control_quantities_keep_wire_units(tmp_path, monkeypatch, arm
 
     from openpi.adapters.g2.config import POLICY_DEFAULTS
     from openpi.adapters.g2.data import LeRobotG2DataConfig
-    from openpi.training import config as native_config
-
     from openpi.adapters.g2.tests.geometry_test import set_joint_action
     from openpi.adapters.g2.tests.geometry_test import set_state_space
+    from openpi.training import config as native_config
 
     settings = copy.deepcopy(POLICY_DEFAULTS)
     set_state_space(settings, "joint")

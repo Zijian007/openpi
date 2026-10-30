@@ -4,8 +4,8 @@ import logging
 import time
 
 from g2_policy_protocol import protocol
+from g2_policy_protocol.data.policy import policy_capabilities
 from g2_policy_protocol.server import PolicyServer
-from g2_policy_tools.capabilities import policy_capabilities
 import numpy as np
 from openpi_client import msgpack_numpy
 
@@ -87,8 +87,6 @@ def connection_metadata(policy_metadata):
             reset=bool(native.get("reset_supported", False)),
         ))
         result["extensions"]["response_mode"] = "full_chunk"
-    elif native.get("execution_steps") is not None:
-        result["execution_steps"] = native["execution_steps"]
     return result
 
 
@@ -97,8 +95,8 @@ class OpenPIBackend:
 
     def __init__(self, policy, metadata):
         self.policy, self.metadata = policy, metadata
-        self._observation_spec = protocol.observation_contract(metadata)
-        self._action_dim = protocol.action_contract(metadata)["dim"]
+        self._observation_spec = metadata["observation_spec"]
+        self._action_dim = metadata["action_spec"]["dim"]
 
     def new_session(self):
         policy = self.policy.new_session() if hasattr(self.policy, "new_session") else self.policy

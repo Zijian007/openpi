@@ -113,7 +113,7 @@ def test_real_server_decodes_negotiated_images(encoding, image_encoding):
                 )
                 ws.send(codec.dumps(request, encoding=encoding))
                 response = codec.loads(ws.recv(timeout=3), encoding=encoding)
-                protocol.parse_response(response, request_id=request_id)
+                protocol.parse_response(response, request_id=request_id, metadata=meta)
                 timing = response["server_timing"]
                 assert timing["decode_ms"] >= 0
                 assert timing["unpack_ms"] >= 0
@@ -141,11 +141,75 @@ def test_corrupt_jpeg_is_rejected():
 
 
 @pytest.mark.parametrize("encoding", ["msgpack", "json"])
+def test_arm_base_server_uses_each_requests_frame_for_state_and_action(encoding):
+    from g2_policy_protocol.data.encoding import matrix_pose
+    from g2_policy_protocol.data.policy import resolve_policy
+    from scipy.spatial.transform import Rotation
+
+    from openpi.adapters.g2.policy import G2Policy
+    from openpi.adapters.g2.transforms import G2Inputs
+
+    settings = resolve_policy({
+        "state": {"pose": {"coordinates": {"parent_frame": "arm_base_link"}}},
+        "action": {"pose": {
+            "coordinates": {"parent_frame": "arm_base_link"},
+            "delta": True, "method": "component", "reference": {"source": "state", "scope": "chunk"},
+        }},
+        "timing": {"history_steps": 2},
+    }, horizon=3)
+    local = np.eye(4)
+    local[:3, 3] = [0.4, -0.2, 0.1]
+    inputs = G2Inputs(policy=settings, arm="right", cameras=())
+
+    class NativePolicy:
+        def __init__(self):
+            self.metadata = {"arm": "right"}
+
+        def infer(self, observation):
+            np.testing.assert_allclose(inputs(observation)["state"], np.tile(matrix_pose(local, 0.5), 2), atol=1e-6)
+            actions = np.zeros((3, 10), np.float32)
+            actions[:, 0] = 0.05
+            actions[:, -1] = 0.7
+            return {"actions": actions}
+
+    server = G2PolicyServer(G2Policy(NativePolicy(), settings), metadata={
+        "arm": "right", "policy_contract": settings, "required_cameras": [], "action_horizon": 3,
+    })
+
+    def client(port):
+        with connect(f"ws://127.0.0.1:{port}/?encoding={encoding}", compression=None, open_timeout=3) as connection:
+            metadata = codec.loads(connection.recv(timeout=3), encoding=encoding)
+            assert "base_to_parent" in metadata["observation_spec"]["context_keys"]
+            for request_id in range(2):
+                base = np.eye(4)
+                base[:3, :3] = Rotation.from_rotvec([0.2, -0.3, 0.5 * request_id]).as_matrix()
+                base[:3, 3] = [0.3 * request_id, 0, 0.8]
+                pose = np.tile(matrix_pose(base @ local, 0.5), 2)
+                request = protocol.build_request(
+                    request_id=request_id, prompt="tea", state=pose, images={}, metadata=metadata,
+                    observation_time_ns=1_000_000_000 + request_id * 100_000_000,
+                    context={"base_to_parent": np.linalg.inv(base), "pose_history": np.tile(pose, (2, 1))},
+                )
+                connection.send(codec.dumps(request, encoding=encoding))
+                response = codec.loads(connection.recv(timeout=3), encoding=encoding)
+                actions = protocol.parse_response(response, request_id=request_id, metadata=metadata)
+                expected = np.tile(pose, (3, 1))
+                expected[:, 10:13] += base[:3, :3] @ [0.05, 0, 0]
+                expected[:, -1] = 0.7
+                np.testing.assert_allclose(actions, expected, atol=1e-6)
+
+    async def run():
+        async with websockets.asyncio.server.serve(server._handler, "127.0.0.1", 0, compression=None) as listener:
+            await asyncio.wait_for(asyncio.to_thread(client, listener.sockets[0].getsockname()[1]), 10)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("encoding", ["msgpack", "json"])
 def test_real_advanced_server_transports_history_and_typed_joint_actions(encoding):
     import copy
 
     from openpi.adapters.g2.config import POLICY_DEFAULTS
-
     from openpi.adapters.g2.tests.geometry_test import set_joint_action
     from openpi.adapters.g2.tests.geometry_test import set_state_space
 

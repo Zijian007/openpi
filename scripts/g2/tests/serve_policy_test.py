@@ -140,7 +140,7 @@ def test_contract_warmup_omits_undeclared_pose():
         seen.append(obs.copy())
         return {"actions": np.zeros((8, 16), np.float32)}
 
-    from g2_policy_tools.schema import resolve_policy
+    from g2_policy_protocol.data.policy import resolve_policy
 
     contract = resolve_policy(
         {

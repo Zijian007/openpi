@@ -7,6 +7,14 @@ import yaml
 from openpi.adapters.g2 import config as g2_config
 
 
+def test_yaml_off_is_text_and_scientific_notation_is_numeric(tmp_path):
+    path = tmp_path / "scalars.yaml"
+    path.write_text("wandb: {mode: off}\ntraining: {learning_rate: 1e-5}\nresume: false")
+    assert g2_config.read_yaml(path) == {
+        "wandb": {"mode": "off"}, "training": {"learning_rate": 1e-5}, "resume": False,
+    }
+
+
 @pytest.mark.parametrize(
     "overrides",
     [{}, {"arm": "right"}, {"language_mode": "full"}, {"vision_mode": "frozen"}],
@@ -135,7 +143,7 @@ def test_smoke_uses_valid_schedule_and_disables_wandb():
 
 def test_yaml_accepts_wandb_on_and_scientific_learning_rate(tmp_path):
     path = tmp_path / "experiment.yaml"
-    path.write_text("wandb:\n  mode: on\ntraining:\n  peak_lr: 1e-5\n")
+    path.write_text("wandb:\n  mode: on\ntraining:\n  learning_rate: 1e-5\n")
     settings = g2_config.resolve_settings(g2_config.load_settings(path), {})
     assert settings["wandb"]["mode"] == "on"
     assert settings["training"]["peak_lr"] == 1e-5

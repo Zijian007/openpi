@@ -4,7 +4,7 @@ import copy
 import dataclasses
 from pathlib import Path
 
-from g2_policy_tools.geometry import ActionCodec
+from g2_policy_protocol.data.encoding import ActionCodec
 from openpi_client import base_policy
 
 from openpi.adapters.g2 import config as g2_config
@@ -49,11 +49,11 @@ class G2Policy(base_policy.BasePolicy):
 
 
 def create_trained_policy(checkpoint_dir, **kwargs) -> G2Policy:
-    """Restore a schema v6 snapshot, then let native OpenPI load weights and transforms."""
+    """Restore a training snapshot, then let native OpenPI load weights and transforms."""
     checkpoint_dir = Path(download.maybe_download(str(checkpoint_dir)))
     snapshot = checkpoint_dir / "assets" / g2_config.CHECKPOINT_CONFIG
     if not snapshot.is_file():
-        raise ValueError("G2 serving requires a g2_train_config.yaml snapshot (schema_version: 6)")
+        raise ValueError("G2 serving requires a g2_train_config.yaml snapshot (schema_version: 7)")
     payload = g2_config.read_yaml(snapshot)
     train_config = g2_config.build_train_config(
         g2_config.normalize_settings(payload["settings"]), tuple(payload["extra_args"])

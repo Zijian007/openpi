@@ -4,10 +4,10 @@ import copy
 import dataclasses
 import pathlib
 
-from g2_policy_tools.dataset import G2Dataset
-from g2_policy_tools.dataset import label_column
-from g2_policy_tools.geometry import action_dimensions
-from g2_policy_tools.state import references_from_sample
+from g2_policy_protocol.data.dataset import TemporalDataset
+from g2_policy_protocol.data.dataset import action_label_column
+from g2_policy_protocol.data.dataset import references_from_sample
+from g2_policy_protocol.data.encoding import action_dimensions
 from typing_extensions import override
 
 from openpi import transforms as native_transforms
@@ -20,7 +20,7 @@ from openpi.training.config import DataConfig
 from openpi.training.config import DataConfigFactory
 from openpi.training.config import ModelTransformFactory
 
-__all__ = ["DatasetFactory", "G2Dataset", "LeRobotG2DataConfig", "RepackG2", "label_column"]
+__all__ = ["DatasetFactory", "TemporalDataset", "LeRobotG2DataConfig", "RepackG2", "action_label_column"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -33,7 +33,7 @@ class RepackG2(native_transforms.DataTransformFn):
         state_key = "state.joint" if joint and not pose else "state.pose"
         result = {
             "observation/state": data[state_key],
-            "actions": data.get("g2.actions", data.get(label_column(self.policy))),
+            "actions": data.get("g2.actions", data.get(action_label_column(self.policy))),
         }
         result.update(references_from_sample(data))
         for camera in self.cameras:
@@ -56,7 +56,7 @@ class DatasetFactory:
         from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
         dataset = LeRobotDataset(data_config.repo_id)
-        return G2Dataset(dataset, self.policy, self.cameras, horizon)
+        return TemporalDataset(dataset, self.policy, self.cameras, horizon)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -79,5 +79,5 @@ class LeRobotG2DataConfig(DataConfigFactory):
                 outputs=[g2.G2Outputs(action_dim=dim)],
             ),
             model_transforms=ModelTransformFactory()(model_config),
-            action_sequence_keys=(label_column(policy),),
+            action_sequence_keys=(action_label_column(policy),),
         )

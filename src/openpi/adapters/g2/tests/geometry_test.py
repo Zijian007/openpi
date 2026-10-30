@@ -1,9 +1,9 @@
 import copy
 
-from g2_policy_tools.geometry import ActionCodec
-from g2_policy_tools.geometry import matrix_pose
-from g2_policy_tools.geometry import pose_matrix
-from g2_policy_tools.validation import validate_rigid_transform
+from g2_policy_protocol.data.encoding import ActionCodec
+from g2_policy_protocol.data.encoding import matrix_pose
+from g2_policy_protocol.data.encoding import pose_matrix
+from g2_policy_protocol.validation import validate_rigid_transform
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -70,13 +70,13 @@ def test_noncommuting_pose_codec_round_trip(rotation, representation, scope, arm
     # Include nontrivial tool and parent transforms; identity-only tests miss multiplication-order bugs.
     parent = pose_matrix(poses(13)[:10])
     tools = {side: pose_matrix(poses(seed)[:10]).tolist() for side, seed in (("left", 14), ("right", 15))}
-    coordinates.update(base_to_parent=parent.tolist(), flange_to_tcp=tools)
+    coordinates.update(parent_frame="arm_base_link", flange_to_tcp=tools)
     set_encoding(
         policy["action"]["pose"],
         representation,
         scope=None if representation == "absolute" else scope,
     )
-    obs = {"observation/pose": poses(1)}
+    obs = {"observation/pose": poses(1), "observation/base_to_parent": parent}
     absolute = poses(2, 6)
     original = absolute.copy()
     codec = ActionCodec(policy, arm)
@@ -126,12 +126,12 @@ def test_reference_is_explicit_and_required(source, key):
 
 def test_dynamic_parent_frame_matches_calibration_and_round_trips():
     policy = copy.deepcopy(POLICY_DEFAULTS)
-    policy["action"]["pose"]["coordinates"]["base_to_parent"] = "observation"
+    policy["action"]["pose"]["coordinates"]["parent_frame"] = "arm_base_link"
     obs = {"observation/pose": poses(1), "observation/base_to_parent": pose_matrix(poses(2)[:10])}
     absolute = poses(3, 3)
     codec = ActionCodec(policy)
     np.testing.assert_allclose(codec.decode(codec.encode(absolute, obs), obs), absolute, atol=2e-6)
-    with pytest.raises(ValueError, match="Dynamic parent"):
+    with pytest.raises(ValueError, match="arm_base_link requires"):
         codec.encode(absolute, {"observation/pose": poses(1)})
 
 

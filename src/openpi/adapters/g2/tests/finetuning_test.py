@@ -15,7 +15,7 @@ from openpi.adapters.g2 import config
 
 def resolve(tmp_path, finetuning):
     path = tmp_path / "lora.yaml"
-    path.write_text(yaml.safe_dump({"finetuning": finetuning}))
+    path.write_text(yaml.safe_dump({"backend_options": {"openpi": {"finetuning": finetuning}}}))
     return config.resolve_settings(config.load_settings(path), {})
 
 
@@ -62,7 +62,7 @@ def test_custom_yaml_controls_real_adapter_shapes_targets_and_restoration(tmp_pa
     assert projections <= trainable
 
     payload = yaml.safe_load(built.checkpoint_assets[config.CHECKPOINT_CONFIG])
-    assert payload["settings"]["finetuning"] == specs
+    assert payload["settings"]["backend_options"]["openpi"]["finetuning"] == specs
     with patch.object(config, "load_settings", side_effect=AssertionError("must not reload current YAML")):
         restored = config.build_train_config(config.normalize_settings(payload["settings"]))
     assert restored.model == built.model
@@ -131,7 +131,7 @@ def test_inactive_lora_settings_do_not_change_the_model_or_resume_semantics(tmp_
     changed["finetuning"]["action_expert"]["lora"].update(rank=7, alpha=99.0, targets=["attention"], rslora=True)
     assert config.build_train_config(settings).model == config.build_train_config(changed).model
     assert config.model_semantics(settings) == config.model_semantics(changed)
-    assert config.public_settings(changed)["finetuning"]["action_expert"]["lora"]["rank"] == 7
+    assert config.public_settings(changed)["backend_options"]["openpi"]["finetuning"]["action_expert"]["lora"]["rank"] == 7
 
 
 @pytest.mark.parametrize(("key", "value"), [("rank", 8), ("alpha", 24.0), ("targets", ["ffn"]), ("rslora", True)])

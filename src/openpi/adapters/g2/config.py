@@ -13,10 +13,12 @@ import re
 from typing import Any
 
 from g2_policy_protocol import protocol
-from g2_policy_tools import schema as settings_schema
-from g2_policy_tools.dataset import label_column
-from g2_policy_tools.geometry import action_dimensions
+from g2_policy_protocol.data import policy as policy_config
+from g2_policy_protocol.data.dataset import action_label_column
+from g2_policy_protocol.data.encoding import action_dimensions
 import yaml
+
+from openpi.adapters.g2 import training_config as training_schema
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 CONFIG_DIR = PROJECT_ROOT / "scripts/g2/configs"
@@ -67,7 +69,7 @@ CLI_FIELDS = {
 
 # Default numerical contract consumed by the shared dataset and geometry tools.
 
-POLICY_DEFAULTS = settings_schema.resolve_policy(
+POLICY_DEFAULTS = policy_config.resolve_policy(
     {
         "action": {
             "pose": {
@@ -89,7 +91,7 @@ SCHEMA = {
     },
     "run": {"smoke"},
     "data": {"root", "repo_id", "cameras"},
-    "policy": {key: set(fields) for key, fields in POLICY_DEFAULTS.items()},
+    "policy": None,
     "model": {"discrete_state_input", "params_path"},
     "training": {
         "batch_size",
@@ -153,31 +155,33 @@ def read_yaml(path: Path) -> dict[str, Any]:
 
 
 def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    """Compile the versioned public tree for the shared numerical tools."""
-    return settings_schema.compile_input(settings)
+    """Validate a self-contained public checkpoint at its loading boundary."""
+    result = training_schema.to_native(settings)
+    for group in ("state", "action"):
+        coordinates = result["policy"][group]["pose"]["coordinates"]
+        for key, value in policy_config.COORDINATES.items():
+            coordinates.setdefault(key, copy.deepcopy(value))
+    validate_settings(result)
+    return result
 
 
 def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    return settings_schema.public_settings(settings)
+    return training_schema.openpi_snapshot(settings)
 
 
 def load_settings(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
     raw = read_yaml(DEFAULT_CONFIG)
-    if raw.get("schema_version") != 6:
-        raise ValueError("New training configs require schema_version: 6")
     # Calibration stays in the resolved contract, so experiment YAML can select frames only.
     for group in ("state", "action"):
-        coordinates = copy.deepcopy(settings_schema.COORDINATES)
-        settings_schema.merge(
+        coordinates = copy.deepcopy(policy_config.COORDINATES)
+        policy_config.merge(
             coordinates, raw["policy"][group]["pose"]["coordinates"], f"policy.{group}.pose.coordinates"
         )
         raw["policy"][group]["pose"]["coordinates"] = coordinates
     if path.resolve() != DEFAULT_CONFIG.resolve():
         override = read_yaml(path)
-        if override.get("schema_version", 6) != 6:
-            raise ValueError("New training configs require schema_version: 6")
-        settings_schema.merge(raw, override)
-    return normalize_settings(raw)
+        policy_config.merge(raw, override)
+    return training_schema.to_native(raw)
 
 
 def resolve_settings(settings: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -245,9 +249,9 @@ def _validate_fields(value, schema, path="settings"):
 
 def validate_settings(settings: dict[str, Any]) -> None:
     _validate_fields(settings, SCHEMA)
-    if settings["schema_version"] != 6:
-        raise ValueError("New training configs require schema_version: 6")
-    settings_schema.validate_policy(settings["policy"])
+    if settings["schema_version"] != training_schema.VERSION:
+        raise ValueError("New training configs require schema_version: 7")
+    policy_config.validate_policy(settings["policy"])
     if state_dimension(settings) > 32 and not settings["model"]["discrete_state_input"]:
         raise ValueError("Combined/history states wider than 32 require discrete_state_input: true")
 
@@ -363,9 +367,6 @@ def build_train_config(
     resume_checkpoint: Path | None = None, resume_training: dict | None = None,
 ):
     """Build exactly the same TrainConfig for both stages and for inference."""
-    validate_settings(settings)
-    validate_extra_args(extra_args)
-
     from openpi.adapters.g2 import presets
     from openpi.models.pi0_config import LoRAOptions
     from openpi.training import optimizer
@@ -478,7 +479,7 @@ def build_train_config(
                 config.data.assets, assets_dir=str(resume_checkpoint / "assets"),
             )),
         )
-    snapshot = settings_schema.public_settings(settings)
+    snapshot = public_settings(settings)
     return dataclasses.replace(
         config,
         checkpoint_assets={
@@ -547,7 +548,7 @@ def describe_policy(settings: dict[str, Any]) -> dict[str, Any]:
         "state": copy.deepcopy(policy["state"]),
         "state_column": columns[0] if len(columns) == 1 else columns,
         "state_dim": state_dimension(settings),
-        "label_column": label_column(policy),
+        "label_column": action_label_column(policy),
         "action_dim": action_dim,
         "prediction_shape": [timing["action_horizon"], action_dim],
         "target_offsets_steps": [first, last],

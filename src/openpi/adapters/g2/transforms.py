@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 
-from g2_policy_tools.contract import G2
-from g2_policy_tools.geometry import ActionCodec
-from g2_policy_tools.state import encode_state
+from g2_policy_protocol.data.contract import G2
+from g2_policy_protocol.data.encoding import ActionCodec
+from g2_policy_protocol.data.encoding import encode_state
 import numpy as np
 
 from openpi import transforms

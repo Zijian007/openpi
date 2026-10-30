@@ -24,7 +24,7 @@ def test_native_modules_do_not_import_robot_adapters():
             forbidden.extend(
                 (str(path), module)
                 for module in modules
-                if module.startswith(("openpi.adapters", "g2_policy_protocol", "g2_policy_tools"))
+                if module.startswith(("openpi.adapters", "g2_policy_protocol"))
             )
     assert forbidden == []
 
@@ -37,7 +37,7 @@ def test_native_entrypoints_import_without_g2_dependencies():
 
         class BlockAdapters(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
-                if fullname.startswith(("openpi.adapters", "g2_policy_protocol", "g2_policy_tools")):
+                if fullname.startswith(("openpi.adapters", "g2_policy_protocol")):
                     raise AssertionError(f"Native OpenPI tried to import {fullname}")
 
         sys.meta_path.insert(0, BlockAdapters())

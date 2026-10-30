@@ -1,36 +1,10 @@
 # 路径相对于仓库根目录；Shell 默认读本文件，--config 选其他 YAML，CLI 可覆盖。
-schema_version: 6
+schema_version: 7
+backend: openpi
 
 experiment:
   name: Sing_TeaPi
   arm: right                   # both | left | right
-
-# 各模块独立选择 frozen | lora | full；lora参数仅在mode=lora时生效。
-finetuning:
-  vision:
-    mode: lora
-    lora:
-      rank: 16               # 正整数
-      alpha: 16.0            # 常规缩放alpha/rank；rslora时alpha/sqrt(rank)
-      targets: [attention]   # 视觉仅支持attention（Q/K/V/O）
-      rslora: false
-  language:
-    mode: lora
-    lora:
-      rank: 16
-      alpha: 16.0
-      targets: [attention, ffn] # attention | ffn，可选一个或两个
-      rslora: false
-  action_expert:
-    mode: full               # lora/full时动作投影与时间MLP也参与训练
-    lora:
-      rank: 32
-      alpha: 32.0
-      targets: [attention, ffn]
-      rslora: false
-
-run:
-  smoke: false              # true = batch=1、20 步、独立实验名；保留微调策略，CLI 可覆盖
 
 data:
   root: /home/zijianwang/openpi/data
@@ -55,6 +29,7 @@ policy:
     pose:
       enabled: true            # 状态固定读取实测数据
       coordinates:
+        parent_frame: base_link # base_link | arm_base_link；当前观测时刻固定参考系
         ee_frame: flange       # flange；命名 TCP 需要标定
         rotation: rot6d        # rot6d | quaternion（xyzw）| axis_angle
       delta: false
@@ -77,6 +52,7 @@ policy:
       quantity: pose           # 末端位姿目标
       source: action           # action 学习 action.* 指令；state 学习 state.* 实测
       coordinates:
+        parent_frame: base_link # arm_base_link 需要数据集 state.arm_base
         ee_frame: flange
         rotation: rot6d
       delta: true
@@ -95,37 +71,67 @@ policy:
     # 默认右臂rot6d有效chunk=(50,10)，补到(50,32)；episode末尾不足时重复最后目标。
 
 model:
-  discrete_state_input: true  # 将当前状态编码进 prompt
-  params_path: gs://openpi-assets/checkpoints/pi05_base/params
+  type: pi05
+  pretrained_path: gs://openpi-assets/checkpoints/pi05_base/params
 
 training:
   batch_size: 8              # 全局 batch，多卡时须可被可见 GPU 数量整除
   num_workers: 4
-  num_train_steps: 50000     # 目标总步数；续训时不是额外步数
+  steps: 50000               # 目标总步数；续训时不是额外步数
   seed: 42
-  fsdp_devices: 1
   log_interval: 50
   save_interval: 5000
-  keep_period: 5000          # null = 仅保留最新 checkpoint
-  peak_lr: 2.5e-5
-  warmup_steps: 1000
-  decay_steps: null          # null = 跟随 num_train_steps
-  decay_lr: 2.5e-6
-
-checkpoints:
-  base_dir: ./checkpoints
-  assets_dir: ./assets
-  overwrite: false           # true 会删除同名实验的整个 checkpoint 目录
-  resume: true              # true 恢复最新 checkpoint；优先于 overwrite
-
-normalization:
-  mode: force                 # auto | force | skip；修改动作表示/预测长度后应重算
-  max_frames: null           # null = 全量；仅影响统计量计算
+  learning_rate: 2.5e-5
 
 runtime:
   gpus: [3]                  # 按顺序写入 CUDA_VISIBLE_DEVICES；已设置的环境变量优先
-  mem_fraction: 0.9           # 环境变量 XLA_PYTHON_CLIENT_MEM_FRACTION 优先
+  resume: true               # 恢复最新 checkpoint；新实验设 false
 
 wandb:
   mode: auto                 # auto = 正常训练开启，smoke 关闭
   project: G2_openpi
+
+backend_options:
+  openpi:
+    # 各模块独立选择 frozen | lora | full；LoRA 参数仅在 mode=lora 时生效。
+    finetuning:
+      vision:
+        mode: lora
+        lora:
+          rank: 16
+          alpha: 16.0        # alpha/rank；rslora 时 alpha/sqrt(rank)
+          targets: [attention]
+          rslora: false
+      language:
+        mode: lora
+        lora:
+          rank: 16
+          alpha: 16.0
+          targets: [attention, ffn]
+          rslora: false
+      action_expert:
+        mode: full          # 动作投影与时间 MLP 同时参与训练
+        lora:
+          rank: 32
+          alpha: 32.0
+          targets: [attention, ffn]
+          rslora: false
+    run:
+      smoke: false          # batch=1、20 步、独立实验名，保留微调策略
+    model:
+      discrete_state_input: true
+    training:
+      fsdp_devices: 1
+      keep_period: 5000     # null = 仅保留最新 checkpoint
+      warmup_steps: 1000
+      decay_steps: null     # 新训练跟随 training.steps；续训保留原周期
+      decay_lr: 2.5e-6
+    checkpoints:
+      base_dir: ./checkpoints
+      assets_dir: ./assets
+      overwrite: false      # true 会删除同名实验目录；resume 优先
+    normalization:
+      mode: force           # auto | force | skip；仅影响新训练
+      max_frames: null      # null = 全量；仅影响统计量计算
+    runtime:
+      mem_fraction: 0.9     # XLA_PYTHON_CLIENT_MEM_FRACTION 环境变量优先

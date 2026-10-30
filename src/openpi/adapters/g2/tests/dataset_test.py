@@ -2,13 +2,13 @@ import copy
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from g2_policy_tools.geometry import matrix_pose
+from g2_policy_protocol.data.encoding import matrix_pose
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
 from openpi.adapters.g2.config import POLICY_DEFAULTS
-from openpi.adapters.g2.data import G2Dataset
+from openpi.adapters.g2.data import TemporalDataset
 from openpi.adapters.g2.tests.geometry_test import set_joint_action
 from openpi.adapters.g2.tests.geometry_test import set_state_space
 from openpi.adapters.g2.transforms import G2Inputs
@@ -44,7 +44,7 @@ def test_resampling_offsets_stride_and_episode_boundaries():
     policy = copy.deepcopy(POLICY_DEFAULTS)
     policy["action"]["pose"]["source"] = "state"
     policy["timing"].update(sample_hz=2, target_offset_steps=1, stride_steps=2, history_steps=3)
-    dataset = G2Dataset(RecordedDataset(), policy, ("head_color",), 3)
+    dataset = TemporalDataset(RecordedDataset(), policy, ("head_color",), 3)
     assert len(dataset) == 4
     sample = dataset[0]
     np.testing.assert_allclose(sample["g2.actions"][:, 0], [2, 3, 3])
@@ -58,7 +58,7 @@ def test_resampling_offsets_stride_and_episode_boundaries():
 def test_upsampling_interpolates_rotation_on_so3():
     policy = copy.deepcopy(POLICY_DEFAULTS)
     policy["timing"]["sample_hz"] = 8
-    sample = G2Dataset(RecordedDataset(), policy, ("head_color",), 2)[1]
+    sample = TemporalDataset(RecordedDataset(), policy, ("head_color",), 2)[1]
     assert sample["state.pose"][0] == 0.5
     expected = Rotation.from_rotvec([0, 0, 0.1]).as_matrix()[:, 0]
     np.testing.assert_allclose(sample["state.pose"][3:6], expected, atol=1e-6)
@@ -68,7 +68,7 @@ def test_joint_velocity_derivatives_preserve_absolute_grippers():
     policy = copy.deepcopy(POLICY_DEFAULTS)
     set_joint_action(policy, "velocity")
     policy["timing"]["sample_hz"] = 4
-    sample = G2Dataset(RecordedDataset(), policy, ("head_color",), 5)[0]["g2.actions"]
+    sample = TemporalDataset(RecordedDataset(), policy, ("head_color",), 5)[0]["g2.actions"]
     assert sample.shape == (5, 16)
     np.testing.assert_allclose(sample[:, 0], 4)
     np.testing.assert_allclose(sample[:, 7], [10, 11, 12, 13, 13])
@@ -78,13 +78,13 @@ def test_torque_requires_recorded_torque_not_position_differences():
     policy = copy.deepcopy(POLICY_DEFAULTS)
     set_joint_action(policy, "torque")
     with pytest.raises(ValueError, match="recorded action.joint_torque"):
-        G2Dataset(RecordedDataset(), policy, ("head_color",), 2)[0]
+        TemporalDataset(RecordedDataset(), policy, ("head_color",), 2)[0]
     raw = RecordedDataset()
     raw.meta.features["action.joint_torque"] = {}
     for row in raw.hf_dataset:
         row["action.joint_torque"] = np.arange(16, dtype=np.float32)
     np.testing.assert_array_equal(
-        G2Dataset(raw, policy, ("head_color",), 2)[0]["g2.actions"], np.tile(np.arange(16), (2, 1))
+        TemporalDataset(raw, policy, ("head_color",), 2)[0]["g2.actions"], np.tile(np.arange(16), (2, 1))
     )
 
 
@@ -94,7 +94,7 @@ def test_combined_history_input_preserves_all_state_values_and_frames():
     policy["timing"].update(history_steps=2, sample_hz=4)
     from openpi.adapters.g2.data import RepackG2
 
-    sample = G2Dataset(RecordedDataset(), policy, ("head_color",), 2)[2]
+    sample = TemporalDataset(RecordedDataset(), policy, ("head_color",), 2)[2]
     result = G2Inputs(policy=policy, arm="right", cameras=("head_color",))(
         RepackG2(policy, ("head_color",))(sample)
     )
@@ -131,7 +131,7 @@ def test_absolute_state_preserves_values_and_grippers(space):
     policy = copy.deepcopy(POLICY_DEFAULTS)
     set_state_space(policy, space)
     policy["timing"]["sample_hz"] = 4
-    sample = G2Dataset(RecordedDataset(), policy, ("head_color",), 2)[2]
+    sample = TemporalDataset(RecordedDataset(), policy, ("head_color",), 2)[2]
     result = G2Inputs(policy=policy, cameras=("head_color",))(RepackG2(policy, ("head_color",))(sample))
     if space in ("eef", "both"):
         np.testing.assert_allclose(result["state"][[0, 10]], [2, 2])
@@ -168,7 +168,7 @@ def test_full_combined_history_reaches_native_tokenizer_without_changing_action_
     dc = LeRobotG2DataConfig(repo_id="test", policy=settings["policy"], arm="right", cameras=("head_color",)).create(
         tmp_path, config.model
     )
-    sample = G2Dataset(RecordedDataset(), settings["policy"], ("head_color",), 2)[2]
+    sample = TemporalDataset(RecordedDataset(), settings["policy"], ("head_color",), 2)[2]
     for transform in (*dc.repack_transforms.inputs, *dc.data_transforms.inputs):
         sample = transform(sample)
     assert sample["state"].shape == (36,)

@@ -26,7 +26,11 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 echo "[bootstrap] GIT_LFS_SKIP_SMUDGE=1 uv sync --extra g2"
-GIT_LFS_SKIP_SMUDGE=1 uv sync --extra g2
+sync_args=(--extra g2)
+if [[ -n "${G2_PROTOCOL_WHEELS:-}" ]]; then
+  sync_args+=(--no-sources-package g2-policy-protocol --find-links "${G2_PROTOCOL_WHEELS}")
+fi
+GIT_LFS_SKIP_SMUDGE=1 uv sync "${sync_args[@]}"
 mkdir -p "${HF_LEROBOT_HOME}"
 echo "[bootstrap] HF_LEROBOT_HOME=${HF_LEROBOT_HOME}"
 

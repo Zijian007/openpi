@@ -1,17 +1,17 @@
-"""v6 branch selection, independent state encodings and LeRobot supervision."""
+"""Branch selection, independent state encodings and LeRobot supervision."""
 
 import copy
 from types import SimpleNamespace
 
-from g2_policy_tools.geometry import ActionCodec
-from g2_policy_tools.geometry import matrix_pose
+from g2_policy_protocol.data.encoding import ActionCodec
+from g2_policy_protocol.data.encoding import matrix_pose
 import numpy as np
 import pytest
 import yaml
 
 from openpi.adapters.g2 import config
-from openpi.adapters.g2.data import G2Dataset
 from openpi.adapters.g2.data import RepackG2
+from openpi.adapters.g2.data import TemporalDataset
 from openpi.adapters.g2.policy import create_trained_policy
 from openpi.adapters.g2.server import connection_metadata
 from openpi.adapters.g2.transforms import G2Inputs
@@ -19,14 +19,14 @@ from openpi.adapters.g2.transforms import G2Inputs
 
 def resolve(tmp_path, policy):
     path = tmp_path / "branches.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": 6, "policy": policy}))
+    path.write_text(yaml.safe_dump({"schema_version": 7, "policy": policy}))
     return config.resolve_settings(config.load_settings(path), {})
 
 
 def test_default_tree_and_self_contained_snapshot():
     resolved = config.resolve_settings(config.load_settings(), {})
     public = config.public_settings(resolved)
-    assert public["schema_version"] == 6
+    assert public["schema_version"] == 7
     assert public["policy"].keys() == {"state", "action", "timing"}
     for group in ("state", "action"):
         assert public["policy"][group].keys() == {"joint", "pose"}
@@ -43,11 +43,11 @@ def test_default_tree_and_self_contained_snapshot():
     assert preview["label_column"] == "action.pose"
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 7, True, "6"])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, True, "7"])
 def test_other_schemas_are_rejected(tmp_path, version):
     path = tmp_path / "version.yaml"
     path.write_text(yaml.safe_dump({"schema_version": version}))
-    with pytest.raises(ValueError, match="schema_version: 6"):
+    with pytest.raises(ValueError, match="schema_version: 7"):
         config.load_settings(path)
 
 
@@ -195,7 +195,7 @@ def test_branch_quantity_and_source_select_lerobot_labels(tmp_path, kind, quanti
         def __getitem__(self, index):
             return copy.deepcopy(rows[index])
 
-    sample = G2Dataset(Dataset(), settings["policy"], (), 3)[0]
+    sample = TemporalDataset(Dataset(), settings["policy"], (), 3)[0]
     packed = RepackG2(settings["policy"], ())(sample)
     target = np.stack([row[column] for row in rows[:3]])
     np.testing.assert_array_equal(packed["actions"], target)

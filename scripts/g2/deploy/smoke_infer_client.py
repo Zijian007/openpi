@@ -40,7 +40,6 @@ from openpi.adapters.g2.transforms import make_g2_example
 logger = logging.getLogger("g2.smoke_infer")
 
 # G2 TrainConfig: action_horizon=50; G2Outputs truncates padded 32 → 20.
-EXPECTED_HORIZON = 50
 
 
 @dataclasses.dataclass
@@ -93,10 +92,9 @@ def _wait_healthz(host: str, port: int, timeout_s: float) -> None:
     raise ConnectionError(f"healthz not ready at {url} within {timeout_s}s: {last_err}")
 
 
-def _check_actions(actions: np.ndarray, *, step: int, metadata: dict | None = None) -> None:
-    metadata = metadata or {}
-    expected_dim = protocol.action_contract(metadata)["dim"]
-    expected_horizon = metadata.get("action_horizon", EXPECTED_HORIZON)
+def _check_actions(actions: np.ndarray, *, step: int, metadata: dict) -> None:
+    expected_dim = metadata["action_spec"]["dim"]
+    expected_horizon = metadata["action_horizon"]
     arr = np.asarray(actions, dtype=np.float32)
     if arr.shape != (expected_horizon, expected_dim) or not np.isfinite(arr).all():
         raise AssertionError(
@@ -106,7 +104,7 @@ def _check_actions(actions: np.ndarray, *, step: int, metadata: dict | None = No
         "step %d: actions=%s quantity=%s first=%s",
         step,
         arr.shape,
-        protocol.action_contract(metadata)["control_quantity"],
+        metadata["action_spec"]["control_quantity"],
         np.array2string(arr[0, :3], precision=3),
     )
 
@@ -139,16 +137,14 @@ def main(args: Args) -> int:
                     key: cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))[1].tobytes()
                     for key, image in images.items()
                 }
-            context = None
-            if protocol.is_v3(meta):
-                context = synthetic_context(
-                    {
-                        "state": native["observation/state"],
-                        "joint_state": np.zeros(16, np.float32),
-                        "images": raw_images,
-                    },
-                    meta,
-                )
+            context = synthetic_context(
+                {
+                    "state": native["observation/state"],
+                    "joint_state": np.zeros(16, np.float32),
+                    "images": raw_images,
+                },
+                meta,
+            )
             request = protocol.build_request(
                 request_id=i,
                 prompt=args.prompt,
@@ -156,7 +152,7 @@ def main(args: Args) -> int:
                 images=images,
                 metadata=meta,
                 joint_state=np.zeros(16, np.float32) if meta["requires_joint_state"] else None,
-                observation_time_ns=time.monotonic_ns() if protocol.is_v3(meta) else None,
+                observation_time_ns=time.monotonic_ns(),
                 context=context,
             )
             t0 = time.monotonic()
@@ -172,11 +168,11 @@ def main(args: Args) -> int:
         "OK: %d infer(s) passed (horizon=%d, action_dim>=%d)",
         args.num_infer,
         meta["action_horizon"],
-        protocol.action_contract(meta)["dim"],
+        meta["action_spec"]["dim"],
     )
     print(
         f"OK: {args.num_infer} infer(s) passed "
-        f"(horizon={meta['action_horizon']}, action_dim={protocol.action_contract(meta)['dim']})",
+        f"(horizon={meta['action_horizon']}, action_dim={meta['action_spec']['dim']})",
         flush=True,
     )
     return 0

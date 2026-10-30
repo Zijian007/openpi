@@ -3,9 +3,9 @@
 import copy
 from unittest.mock import patch
 
-from g2_policy_tools.geometry import ActionCodec
-from g2_policy_tools.geometry import matrix_pose
-from g2_policy_tools.geometry import pose_matrix
+from g2_policy_protocol.data.encoding import ActionCodec
+from g2_policy_protocol.data.encoding import matrix_pose
+from g2_policy_protocol.data.encoding import pose_matrix
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -19,7 +19,7 @@ from openpi.adapters.g2.transforms import G2Inputs
 
 def resolve(tmp_path, policy):
     path = tmp_path / "pose.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": 6, "policy": policy}))
+    path.write_text(yaml.safe_dump({"schema_version": 7, "policy": policy}))
     return g2_config.resolve_settings(g2_config.load_settings(path), {})
 
 
@@ -34,7 +34,7 @@ def coordinates(index, rotation):
     return {
         "ee_frame": f"tcp_{index}",
         "rotation": rotation,
-        "base_to_parent": transform(index).tolist(),
+        "parent_frame": "arm_base_link" if index > 0 else "base_link",
         "flange_to_tcp": {"left": transform(index + 1).tolist(), "right": transform(index + 2).tolist()},
     }
 
@@ -76,11 +76,14 @@ def test_independent_coordinates_match_manual_geometry_and_decode_canonical_targ
     )
     history = np.stack([pair(1), pair(2)])
     targets = np.stack([pair(3), pair(4), pair(5)])
-    obs = {"observation/state": history[-1], "observation/pose": history[-1], "observation/pose_history": history}
+    obs = {
+        "observation/state": history[-1], "observation/pose": history[-1],
+        "observation/pose_history": history, "observation/base_to_parent": transform(0.4),
+    }
     inputs = G2Inputs(policy=settings["policy"], arm="right", cameras=())
     encoded = inputs(dict(obs, actions=targets))
 
-    state_parent = np.asarray(state_pose["base_to_parent"])
+    state_parent = obs["observation/base_to_parent"]
     state_tool = np.asarray(state_pose["flange_to_tcp"]["right"])
     state_ref = state_parent @ pose_matrix(history[-1, 10:]) @ state_tool
     expected_state = []
@@ -92,7 +95,7 @@ def test_independent_coordinates_match_manual_geometry_and_decode_canonical_targ
     np.testing.assert_allclose(encoded["state"], np.concatenate(expected_state), atol=2e-6)
     assert len(encoded["state"]) == g2_config.state_dimension(settings)
 
-    action_parent = np.asarray(action_pose["base_to_parent"])
+    action_parent = np.eye(4)
     action_tool = np.asarray(action_pose["flange_to_tcp"]["right"])
     ref = action_parent @ pose_matrix(history[-1, 10:]) @ action_tool
     expected_actions = []
@@ -155,10 +158,10 @@ def test_independent_pose_overrides_and_checkpoint_restoration(tmp_path):
     [
         (None, "must be a YAML mapping"),
         ({"parent_fram": "world"}, "Unknown YAML field"),
-        ({"parent_frame": "world"}, "Unknown YAML field"),
+        ({"parent_frame": "world"}, "parent_frame must be one of"),
         ({"ee_frame": "tcp"}, "requires flange_to_tcp"),
         ({"rotation": "euler"}, "rotation must be"),
-        ({"base_to_parent": [[1]]}, "4x4 rigid transform"),
+        ({"base_to_parent": [[1]]}, "Unknown YAML field"),
     ],
 )
 def test_invalid_pose_settings_report_the_group(tmp_path, group, pose, message):
@@ -169,7 +172,7 @@ def test_invalid_pose_settings_report_the_group(tmp_path, group, pose, message):
 @pytest.mark.parametrize("group", ["state", "action"])
 def test_dynamic_parent_in_either_group_is_advertised_and_used(tmp_path, group):
     settings = resolve(
-        tmp_path, {group: {"pose": {"coordinates": {"base_to_parent": "observation"}}}}
+        tmp_path, {group: {"pose": {"coordinates": {"parent_frame": "arm_base_link"}}}}
     )
     metadata = connection_metadata({"policy_contract": settings["policy"], "required_cameras": []})
     assert "base_to_parent" in metadata["observation_spec"]["context_keys"]
@@ -177,14 +180,19 @@ def test_dynamic_parent_in_either_group_is_advertised_and_used(tmp_path, group):
     inputs = G2Inputs(policy=settings["policy"], arm="right", cameras=())
     result = inputs(dict(obs, actions=pair(3)[None]))
     static = copy.deepcopy(settings)
-    static["policy"][group]["pose"]["coordinates"]["base_to_parent"] = transform(0.3).tolist()
-    expected = G2Inputs(policy=static["policy"], arm="right", cameras=())(
-        dict(obs, actions=pair(3)[None])
-    )
-    for key in ("state", "actions"):
-        np.testing.assert_allclose(result[key], expected[key], atol=2e-6)
+    static["policy"][group]["pose"]["coordinates"]["parent_frame"] = "base_link"
+    canonical = dict(obs, actions=pair(3)[None])
+    for key in ("observation/state", "observation/pose", "actions"):
+        value = canonical[key]
+        canonical[key] = np.concatenate([
+            matrix_pose(transform(0.3) @ pose_matrix(value[..., offset:offset + 10]), value[..., offset + 9])
+            for offset in (0, 10)
+        ], axis=-1)
+    expected = G2Inputs(policy=static["policy"], arm="right", cameras=())(canonical)
+    key = "state" if group == "state" else "actions"
+    np.testing.assert_allclose(result[key], expected[key], atol=2e-6)
     obs.pop("observation/base_to_parent")
-    with pytest.raises(ValueError, match="Dynamic parent"):
+    with pytest.raises(ValueError, match="arm_base_link requires"):
         inputs(dict(obs, actions=pair(3)[None]))
 
 
@@ -192,8 +200,8 @@ def test_two_dynamic_parents_share_the_same_observation_transform(tmp_path):
     settings = resolve(
         tmp_path,
         {
-            "state": {"pose": {"coordinates": {"base_to_parent": "observation"}}},
-            "action": {"pose": {"coordinates": {"base_to_parent": "observation"}}},
+            "state": {"pose": {"coordinates": {"parent_frame": "arm_base_link"}}},
+            "action": {"pose": {"coordinates": {"parent_frame": "arm_base_link"}}},
         },
     )
     metadata = connection_metadata({"policy_contract": settings["policy"], "required_cameras": []})

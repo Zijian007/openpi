@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from openpi.adapters.g2 import config as g2_config
+from openpi.adapters.g2.training_config import to_native
 
 PROJECT_ROOT = g2_config.PROJECT_ROOT
 
@@ -62,6 +63,8 @@ def _parse_argv(argv: list[str]):
         parser.add_argument(f"--{flag}", type=int)
     for flag in ("peak-lr", "decay-lr"):
         parser.add_argument(f"--{flag}", type=float)
+    parser.add_argument("--steps", dest="num_train_steps", type=int)
+    parser.add_argument("--learning-rate", dest="peak_lr", type=float)
     parser.add_argument("--keep-period", type=lambda value: None if value.lower() in ("none", "null") else int(value))
     for flag in ("overwrite", "resume"):
         parser.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction)
@@ -82,7 +85,11 @@ def _resolve(args):
     overrides = vars(args).copy()
     if "arm" not in overrides and "ARM" in os.environ:
         overrides["arm"] = os.environ["ARM"]
-    settings = g2_config.resolve_settings(g2_config.load_settings(args.config), overrides)
+    settings = g2_config.load_settings(args.config)
+    settings["runtime"]["mem_fraction"] = float(
+        os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION", settings["runtime"]["mem_fraction"])
+    )
+    settings = g2_config.resolve_settings(settings, overrides)
     if not settings["experiment"]["name"]:
         if settings["checkpoints"]["resume"]:
             raise ValueError("Resume requires an explicit experiment.name; use --exp-name for a smoke experiment")
@@ -93,10 +100,6 @@ def _resolve(args):
         settings[section][key] = str(resolve_under_project(settings[section][key]))
     if "://" not in settings["model"]["params_path"]:
         settings["model"]["params_path"] = str(resolve_under_project(settings["model"]["params_path"]))
-    settings["runtime"]["mem_fraction"] = float(
-        os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION", settings["runtime"]["mem_fraction"])
-    )
-    g2_config.validate_settings(settings)
     return settings
 
 
@@ -114,7 +117,7 @@ def _check_dataset(settings):
     info = json.loads((root / "meta/info.json").read_text())
     if info.get("codebase_version") != "v2.1":
         raise ValueError(f"Expected LeRobot v2.1 in {root}, got {info.get('codebase_version')!r}")
-    from g2_policy_tools.data_contract import validate_dataset_contract
+    from g2_policy_protocol.data.dataset import validate_dataset_contract
 
     validate_dataset_contract(
         info.get("features", {}), info, settings["policy"],
@@ -124,7 +127,7 @@ def _check_dataset(settings):
 
 def _run_stage(stage: str, snapshot: Path):
     payload = g2_config.read_yaml(snapshot)
-    settings = g2_config.normalize_settings(payload["settings"])
+    settings = to_native(payload["settings"])
     _setup_runtime(settings)  # must precede importing JAX/LeRobot
     config = g2_config.build_train_config(
         settings, tuple(payload["extra_args"]),
