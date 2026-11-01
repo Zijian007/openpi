@@ -26,7 +26,7 @@ import serve_policy  # noqa: E402
         ("smoke_infer_client.sh", ["--config", "configs/deploy right.yaml", "--port", "8123"]),
     ],
 )
-def test_shell_launches_adapter_with_optional_dependency(tmp_path, launcher, cli_args):
+def test_shell_launches_adapter_without_resyncing_environment(tmp_path, launcher, cli_args):
     root = tmp_path / "project"
     entry = root / "scripts/g2/deploy" / launcher
     entry.parent.mkdir(parents=True)
@@ -52,7 +52,7 @@ def test_shell_launches_adapter_with_optional_dependency(tmp_path, launcher, cli
     command = json.loads(
         next(line.removeprefix("LAUNCH=") for line in result.stdout.splitlines() if line.startswith("LAUNCH="))
     )
-    assert command == ["run", "--extra", "g2", f"scripts/g2/deploy/{Path(launcher).stem}.py", *cli_args]
+    assert command == ["run", "--no-sync", "--extra", "g2", f"scripts/g2/deploy/{Path(launcher).stem}.py", *cli_args]
 
 
 @pytest.mark.parametrize("arm", ["both", "right"])

@@ -5,4 +5,5 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 cd "${G2_OPENPI_PROJECT_ROOT}"
 # This server always uses OpenPI's project environment, even from the robot venv.
-exec env -u VIRTUAL_ENV uv run --extra g2 scripts/g2/deploy/serve_policy.py "$@"
+# Dependencies are managed by bootstrap.sh; starting a service must not resync them.
+exec env -u VIRTUAL_ENV uv run --no-sync --extra g2 scripts/g2/deploy/serve_policy.py "$@"

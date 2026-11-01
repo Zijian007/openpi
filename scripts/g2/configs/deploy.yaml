@@ -10,4 +10,4 @@ server:
   rtc_soft_overlap_steps: 5
   rtc_guidance: 10.0
 runtime:
-  gpus: [3]
+  gpus: [0]

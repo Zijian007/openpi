@@ -2,6 +2,8 @@
 
 [返回入口](../README.md) · [通信与架构](architecture.md) · [RTC](rtc.md)
 
+新服务器先完成[环境安装与验证](environment.md)；仅部署已有 checkpoint 不需要训练数据。
+
 `configs/deploy.yaml` 的 `checkpoint` 指向 `runs/<experiment.name>/checkpoints/<step>/`，选择权重和进程设置，`serve_policy.sh` 调用专属 `scripts/g2/deploy/serve_policy.py`，通过 G2 适配层加载模型。
 原生 `scripts/serve_policy.py` 保持原生协议，不处理 G2 preset 或 G2 控制器。
 默认 **warmup**：监听前进行两次普通推理；启用 RTC 时再进行两次引导推理，提前完成 JAX JIT；`--no-warmup` 可关。

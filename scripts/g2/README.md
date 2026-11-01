@@ -26,6 +26,7 @@ scripts/g2/
 │   ├── smoke_infer_client.py
 │   └── smoke_infer_client.sh
 ├── docs/
+│   ├── environment.md         # 新服务器从零安装、验证和排错
 │   ├── training.md            # 从改 YAML 到短跑、续训、选臂
 │   ├── deployment.md          # 加载 checkpoint、预热和推理检查
 │   ├── policy.md              # 状态、动作、坐标系、时间与协议
@@ -39,7 +40,9 @@ scripts/g2/
 
 ## 快速开始
 
-1. 安装：`bash scripts/g2/bootstrap.sh`；加 `--download-base` 可下载 `pi05_base`。
+新服务器先按[环境安装指南](docs/environment.md)准备驱动、uv、仓库和协议包，再执行以下步骤。
+
+1. 安装：`bash scripts/g2/bootstrap.sh`；默认只装运行依赖，加 `--download-base` 可下载 `pi05_base`。
 2. 准备 LeRobot **v2.1** 数据，并修改 [`configs/train.yaml`](configs/train.yaml) 的数据路径、选臂和训练设置。
 3. 预览后短跑，再启动正式训练：
 
@@ -68,6 +71,7 @@ scripts/g2/
 
 | 要做什么 | 入口 |
 |---|---|
+| 新服务器配环境、验证安装、解决缺包 | [环境安装](docs/environment.md) |
 | 准备数据、改训练参数、短跑、续训、选臂 | [训练说明](docs/training.md) |
 | 选择权重、启动服务、检查推理 | [部署说明](docs/deployment.md) |
 | 本仓库如何覆盖 policy、快照和与 LeRobot 互拷 | [Policy 配置](docs/policy.md) |
@@ -97,8 +101,13 @@ Shell 入口也支持 Python 入口的临时覆盖，例如 `--batch-size 2`、`
 ## 开发
 
 ```bash
+bash scripts/g2/bootstrap.sh --dev
 .venv/bin/python -m pytest -q scripts/g2/tests src/openpi/adapters/g2/tests
 ```
+
+`--dev` 额外安装测试、代码检查和 Notebook 工具；服务启动不会自动同步或补装依赖。
+OpenCV 统一使用 `opencv-python-headless`，支持图像编解码，不包含桌面窗口功能。
+ALOHA 仿真单独通过 `uv sync --extra g2 --extra aloha --no-dev` 安装，G2 默认不安装。
 
 跨采数机、GPU 和域控的操作见 [训练手册](../../../g2_wzj_docs/ops/ml/openpi-pi05-train-g2.md)
 和 [部署手册](../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)。

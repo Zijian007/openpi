@@ -3,6 +3,7 @@
 [返回入口](../README.md) · [Policy 配置](policy.md) · [字段速查](../../../../g2-policy-protocol/docs/policy-config.md)
 
 从仓库根目录运行。默认读 [`configs/train.yaml`](../configs/train.yaml)。
+新服务器先完成[环境安装与验证](environment.md)，包括协议包和本地项目安装。
 
 ## 最短路径
 
