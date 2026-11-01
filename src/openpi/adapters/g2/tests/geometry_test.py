@@ -33,11 +33,7 @@ def set_joint_action(policy, quantity="position", representation="absolute", *, 
     spec["enabled"] = True
     spec["quantity"] = {
         "joint_position": "position",
-        "joint_velocity": "velocity",
-        "joint_torque": "torque",
         "position": "position",
-        "velocity": "velocity",
-        "torque": "torque",
     }[quantity]
     spec["source"] = source
     set_encoding(spec, representation, scope=scope)

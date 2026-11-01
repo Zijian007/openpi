@@ -1,11 +1,16 @@
 from contextlib import redirect_stdout
 import copy
+from io import BytesIO
 from io import StringIO
 import json
 import os
 from pathlib import Path
+import pty
+import re
 import subprocess
 import sys
+import termios
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -14,9 +19,9 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "train"))
 
 from train_pipeline import _check_dataset
-from train_pipeline import _norm_signature
 from train_pipeline import _parse_argv
 from train_pipeline import _resolve
+from train_pipeline import _run_command
 from train_pipeline import main
 from train_pipeline import normalize_child_status
 
@@ -54,7 +59,7 @@ def write_resume_checkpoint(root, settings, step=1400, extra_args=()):
 
 def test_yaml_defaults_and_cli_override():
     settings = resolve(["--batch-size", "3", "--num-train-steps", "40000"])
-    assert settings["experiment"]["name"] == "Sing_TeaPi"
+    assert settings["experiment"]["name"] == "g2_experiment"
     assert settings["training"]["batch_size"] == 3
     assert settings["training"]["num_train_steps"] == 40000
     assert settings["checkpoints"]["overwrite"] is False
@@ -74,7 +79,7 @@ def test_wandb_is_checked_before_norm_or_training(tmp_path, wandb_check, fails):
     args = ["--no-resume", "--wandb", "on", "--checkpoint-base-dir", str(tmp_path / "checkpoints"),
             "--assets-base-dir", str(tmp_path / "assets")]
     with patch("train_pipeline._check_dataset"), patch(
-        "train_pipeline._run_command", side_effect=lambda command: events.append(command[-1])
+        "train_pipeline._run_command", side_effect=lambda command, **kwargs: events.append(command[-1])
     ):
         if fails:
             with pytest.raises(RuntimeError, match="W&B preflight failed"):
@@ -83,7 +88,11 @@ def test_wandb_is_checked_before_norm_or_training(tmp_path, wandb_check, fails):
         else:
             main(args)
             assert events == ["wandb", "norm", "train"]
-    assert not (tmp_path / "checkpoints").exists()
+    if fails:
+        assert not (tmp_path / "checkpoints").exists()
+    else:
+        assert (tmp_path / "checkpoints/g2_experiment/g2_train_config.yaml").is_file()
+        assert (tmp_path / "checkpoints/g2_experiment/train.log").is_file()
     assert not (tmp_path / "assets").exists()
 
 
@@ -123,6 +132,16 @@ def test_custom_yaml_merges_without_repeating_all_fields(tmp_path):
     assert settings["training"]["num_train_steps"] == 50000
 
 
+def test_preview_reports_environment_gpu_selection_and_fsdp_grouping(tmp_path, capsys):
+    path = tmp_path / "devices.yaml"
+    path.write_text("schema_version: 8\nruntime:\n  gpus: [3]\n  fsdp_devices: 2\n")
+    with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,2"}, clear=True):
+        main(["--config", str(path), "--dry-run", "--no-resume"])
+    output = capsys.readouterr().out
+    assert "GPU selection: 1,2 | FSDP devices/group: 2 | data-parallel groups: 1" in output
+    assert "global batch: 8 | batch/GPU: 4" in output
+
+
 @pytest.mark.parametrize("text", ["training:\n  batch_szie: 2\n", "training:\n  batch_size: 2\n  batch_size: 3\n"])
 def test_rejects_typo_and_duplicate_yaml_keys(tmp_path, text):
     config = tmp_path / "bad.yaml"
@@ -137,10 +156,10 @@ def test_runtime_environment_overrides_yaml():
     args, _ = _parse_argv([])
     with patch.dict(os.environ, {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.7"}, clear=True):
         settings = _resolve(args)
-        assert settings["runtime"]["gpus"] == [3]
+        assert settings["runtime"]["gpus"] == [0]
         assert settings["runtime"]["mem_fraction"] == 0.7
         _setup_runtime(settings)
-        assert os.environ["CUDA_VISIBLE_DEVICES"] == "3"
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "0"
     with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0,1"}, clear=False):
         _setup_runtime(settings)
         assert os.environ["CUDA_VISIBLE_DEVICES"] == "0,1"
@@ -179,8 +198,10 @@ def test_shell_training_entries_forward_selected_yaml_and_overrides(
     entry = root / "scripts/g2/train" / launcher
     entry.parent.mkdir(parents=True)
     script = (g2_config.PROJECT_ROOT / "scripts/g2/train" / launcher).read_text()
+    selection = re.search(r'^G2_TRAIN_CONFIG="([^"]+)"', script, re.MULTILINE)
+    default_config = selection.group(1) if selection else "scripts/g2/configs/train.yaml"
     if script_config is not None:
-        script = script.replace('G2_TRAIN_CONFIG="scripts/g2/configs/train.yaml"', f'G2_TRAIN_CONFIG="{script_config}"')
+        script = script.replace(f'G2_TRAIN_CONFIG="{default_config}"', f'G2_TRAIN_CONFIG="{script_config}"')
     entry.write_text(script)
     (root / "scripts/g2/_env.sh").write_text((g2_config.PROJECT_ROOT / "scripts/g2/_env.sh").read_text())
     interpreter = root / ".venv/bin/python"
@@ -209,7 +230,7 @@ def test_shell_training_entries_forward_selected_yaml_and_overrides(
     assert json.loads(result.stdout) == [
         "scripts/g2/train/train_pipeline.py",
         "--config",
-        script_config or "scripts/g2/configs/train.yaml",
+        script_config or default_config,
         *mode_args,
         *cli_args,
     ]
@@ -343,7 +364,7 @@ def test_resume_checks_freezing_and_only_active_lora_settings(
     tmp_path, current_mode, previous_mode, previous_rank, error
 ):
     config = tmp_path / "experiment.yaml"
-    config.write_text(f"backend_options:\n  openpi:\n    finetuning:\n      vision:\n        mode: {current_mode}\n")
+    config.write_text(f"finetuning:\n  vision:\n    mode: {current_mode}\n")
     args = [
         "--config",
         str(config),
@@ -358,11 +379,11 @@ def test_resume_checks_freezing_and_only_active_lora_settings(
     previous = copy.deepcopy(settings)
     previous["finetuning"]["vision"]["mode"] = previous_mode
     previous["finetuning"]["vision"]["lora"]["rank"] = previous_rank
-    checkpoint = tmp_path / "checkpoints" / g2_config.training_config_name(settings) / settings["experiment"]["name"]
+    checkpoint = g2_config.checkpoint_dir(settings)
     checkpoint.mkdir(parents=True)
     write_resume_checkpoint(checkpoint, previous)
     norm = (
-        tmp_path / "assets" / g2_config.training_config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
+        g2_config.normalization_cache_dir(settings) / settings["data"]["repo_id"] / "norm_stats.json"
     )
     norm.parent.mkdir(parents=True)
     norm.write_text("{}")
@@ -383,10 +404,10 @@ def test_resume_checks_freezing_and_only_active_lora_settings(
 def test_worker_snapshot_uses_public_tree_for_both_stages(tmp_path):
     captured = []
 
-    def run(command):
+    def run(command, **kwargs):
         path = Path(command[command.index("--resolved-config") + 1])
         payload = g2_config.read_yaml(path)
-        assert payload["settings"]["schema_version"] == 7
+        assert payload["settings"]["schema_version"] == 8
         assert payload["settings"]["policy"]["state"].keys() == {"joint", "pose"}
         assert payload["settings"]["policy"]["action"].keys() == {"joint", "pose"}
         captured.append(g2_config.normalize_settings(payload["settings"]))
@@ -411,11 +432,11 @@ def test_resume_rejects_changed_branch_semantics_before_launching_worker(tmp_pat
         "--skip-norm",
     ]
     settings = resolve(args)
-    root = tmp_path / "checkpoints" / g2_config.training_config_name(settings) / settings["experiment"]["name"]
+    root = g2_config.checkpoint_dir(settings)
     root.mkdir(parents=True)
     write_resume_checkpoint(root, settings)
     norm = (
-        tmp_path / "assets" / g2_config.training_config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
+        g2_config.normalization_cache_dir(settings) / settings["data"]["repo_id"] / "norm_stats.json"
     )
     norm.parent.mkdir(parents=True)
     norm.write_text("{}")
@@ -437,10 +458,10 @@ def test_resume_rejects_changed_branch_semantics_before_launching_worker(tmp_pat
 def test_branch_changes_invalidate_normalization_cache(tmp_path, override):
     args = ["--no-resume", "--assets-base-dir", str(tmp_path), "--norm", "auto"]
     settings = resolve(args)
-    norm = tmp_path / g2_config.training_config_name(settings) / settings["data"]["repo_id"] / "norm_stats.json"
+    norm = g2_config.normalization_cache_dir(settings) / settings["data"]["repo_id"] / "norm_stats.json"
     norm.parent.mkdir(parents=True)
     norm.write_text("{}")
-    norm.with_name("g2_norm_config.yaml").write_text(yaml.safe_dump(_norm_signature(settings)))
+    norm.with_name("g2_norm_config.yaml").write_text(yaml.safe_dump(g2_config.normalization_signature(settings)))
     selected = tmp_path / "combined.yaml"
     selected.write_text(yaml.safe_dump({"policy": override}))
     for extra, expected in ((["--log-interval", "10"], "skip=True"), (["--config", str(selected)], "skip=False")):
@@ -455,7 +476,7 @@ def resume_experiment(tmp_path):
     args = ["--resume", "--checkpoint-base-dir", str(tmp_path / "checkpoints"),
             "--assets-base-dir", str(tmp_path / "assets")]
     settings = resolve(args)
-    root = Path(settings["checkpoints"]["base_dir"]) / g2_config.training_config_name(settings) / settings["experiment"]["name"]
+    root = g2_config.checkpoint_dir(settings)
     checkpoint = write_resume_checkpoint(root, settings)
     return args, settings, checkpoint
 
@@ -463,11 +484,11 @@ def resume_experiment(tmp_path):
 def test_resume_force_uses_checkpoint_without_shared_stats(resume_experiment):
     args, settings, checkpoint = resume_experiment
     captured = []
-    def run(command):
+    def run(command, **kwargs):
         assert command[-1] == "train"
         payload = g2_config.read_yaml(Path(command[command.index("--resolved-config") + 1]))
         assert payload["resume_checkpoint"] == str(checkpoint)
-        assert payload["settings"]["backend_options"]["openpi"]["training"]["decay_steps"] == settings["training"]["num_train_steps"]
+        assert payload["settings"]["training"]["lr_schedule"]["decay_steps"] == settings["training"]["num_train_steps"]
         captured.append(payload)
     with patch("train_pipeline._check_dataset"), patch("train_pipeline._run_command", side_effect=run):
         main([*args, "--num-train-steps", "60000"])
@@ -518,7 +539,7 @@ def test_resume_loads_checkpoint_stats_not_shared_assets(resume_experiment):
     from openpi.adapters.g2.resume import resolve_resume
     from openpi.shared import normalize
     _, settings, checkpoint = resume_experiment
-    shared = Path(settings["checkpoints"]["assets_dir"]) / g2_config.training_config_name(settings) / settings["data"]["repo_id"]
+    shared = g2_config.normalization_cache_dir(settings) / settings["data"]["repo_id"]
     for path, mean in ((shared, 99.), (checkpoint / "assets" / settings["data"]["repo_id"], 1.)):
         normalize.save(path, {"state": normalize.NormStats(mean=np.array([mean]), std=np.array([1.]))})
     resolved, extra, selected, state_config = resolve_resume(settings, (), checkpoint.parent)
@@ -534,11 +555,117 @@ def test_saved_snapshot_freezes_effective_schedule_and_optimizer(resume_experime
     settings["checkpoints"]["resume"] = False
     cfg = g2_config.build_train_config(settings, ("--optimizer.b1", "0.8"))
     saved = yaml.safe_load(cfg.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])
-    assert saved["settings"]["backend_options"]["openpi"]["training"]["decay_steps"] is None
+    assert saved["settings"]["training"]["lr_schedule"]["decay_steps"] is None
     assert saved["training_state_config"]["lr_schedule"]["decay_steps"] == 50000
     assert saved["training_state_config"]["optimizer"]["b1"] == .8
     cfg2 = g2_config.build_train_config(settings, resume_training=saved["training_state_config"])
     assert cfg2.optimizer.b1 == .8
+
+
+def test_run_resume_uses_saved_config_after_experiment_is_moved(resume_experiment):
+    args, settings, checkpoint = resume_experiment
+    run = checkpoint.parent.parent
+    (run / g2_config.CHECKPOINT_CONFIG).write_text(yaml.safe_dump({
+        "settings": g2_config.public_settings(settings), "extra_args": [],
+    }))
+    moved = run.with_name("renamed_experiment")
+    run.rename(moved)
+    with patch.object(g2_config, "load_settings", side_effect=AssertionError("must use saved config")):
+        parsed, _ = _parse_argv(["--run", str(moved), "--steps", "60000"])
+        resolved = _resolve(parsed)
+    from openpi.adapters.g2.resume import resolve_resume
+    restored, _, selected, _ = resolve_resume(resolved, (), g2_config.checkpoint_dir(resolved))
+    assert restored["experiment"]["name"] == "renamed_experiment"
+    assert selected == moved / "checkpoints/1400"
+    assert g2_config.build_train_config(restored).checkpoint_dir == moved / "checkpoints"
+    assert restored["training"]["num_train_steps"] == 60000
+
+
+def test_run_resume_ignores_newer_unsaved_configuration(resume_experiment):
+    _, settings, checkpoint = resume_experiment
+    run = checkpoint.parent.parent
+    attempt = copy.deepcopy(settings)
+    attempt["policy"]["action"]["pose"]["method"] = "se3"
+    for directory in (run, checkpoint.parent):
+        (directory / g2_config.CHECKPOINT_CONFIG).write_text(yaml.safe_dump({
+            "settings": g2_config.public_settings(attempt), "extra_args": [],
+        }))
+    with patch.dict(os.environ, {}, clear=True):
+        args, _ = _parse_argv(["--run", str(run), "--steps", "60000"])
+        resolved = _resolve(args)
+    assert args.config == checkpoint / "assets" / g2_config.CHECKPOINT_CONFIG
+    assert resolved["policy"] == settings["policy"]
+
+
+def test_worker_output_is_written_to_run_log(tmp_path, capsys):
+    log = tmp_path / "train.log"
+    _run_command(["-c", "import sys; print('training output'); print('training error', file=sys.stderr)"], log_path=log)
+    contents = log.read_text()
+    assert "training output" in contents and "training error" in contents
+    assert "training output" in capsys.readouterr().out
+
+
+def test_worker_without_log_inherits_stdout_and_stderr(capfd):
+    _run_command(["-c", "import sys; print('stdout'); print('stderr', file=sys.stderr)"])
+    output = capfd.readouterr()
+    assert output.out.strip() == "stdout"
+    assert output.err.strip() == "stderr"
+
+
+def test_text_console_preserves_split_utf8_output(tmp_path):
+    log = tmp_path / "unicode.log"
+    console = StringIO()
+    script = "import os, time\nfor byte in '训练😺'.encode():\n os.write(1, bytes([byte])); time.sleep(0.01)"
+    with patch("train_pipeline.sys.stdout", console):
+        _run_command(["-c", script], log_path=log)
+    assert console.getvalue() == "训练😺"
+    assert log.read_text() == "训练😺"
+
+
+def test_interactive_worker_keeps_tqdm_and_terminal_size_while_logging(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("CI", raising=False)
+    master, slave = pty.openpty()
+    output = BytesIO()
+    terminal = SimpleNamespace(isatty=lambda: True, fileno=lambda: slave, buffer=output)
+    log = tmp_path / "train.log"
+    try:
+        termios.tcsetwinsize(slave, (27, 101))
+        command = ["-c", "\n".join([
+            "import os, sys",
+            "from tqdm_loggable.auto import INTERACTIVE_TQDM, tqdm",
+            "assert sys.stdout.isatty() and sys.stderr.isatty()",
+            "assert INTERACTIVE_TQDM",
+            "assert os.get_terminal_size() == (101, 27)",
+            "for _ in tqdm(range(3), mininterval=0): pass",
+            "print('terminal worker complete')",
+        ])]
+        with patch("train_pipeline.sys.stdout", terminal):
+            _run_command(command, log_path=log)
+    finally:
+        os.close(master)
+        os.close(slave)
+    contents = log.read_bytes()
+    assert contents == output.getvalue()
+    assert b"\r" in contents and b"100%" in contents
+    assert b"terminal worker complete" in contents
+    assert b"Progress on:" not in contents
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_logging_preserves_worker_failure_and_signal_handlers(tmp_path, interactive):
+    import signal
+
+    handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGWINCH)}
+    output = BytesIO()
+    terminal = SimpleNamespace(isatty=lambda: interactive, fileno=lambda: 1, buffer=output,
+                               write=lambda text: output.write(text.encode()), flush=lambda: None)
+    log = tmp_path / "failure.log"
+    with patch("train_pipeline.sys.stdout", terminal), pytest.raises(subprocess.CalledProcessError) as error:
+        _run_command(["-c", "print('worker failed', flush=True); raise SystemExit(7)"], log_path=log)
+    assert error.value.returncode == 7
+    assert "worker failed" in log.read_text()
+    assert {s: signal.getsignal(s) for s in handlers} == handlers
 
 
 def test_resume_rejects_already_completed_target(resume_experiment):

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -158,7 +160,7 @@ def read_yaml(path: Path) -> dict[str, Any]:
 
 def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Validate a self-contained public checkpoint at its loading boundary."""
-    result = training_schema.to_native(settings)
+    result = training_schema.complete_finetuning(training_schema.to_native(settings))
     for group in ("state", "action"):
         coordinates = result["policy"][group]["pose"]["coordinates"]
         for key, value in policy_config.COORDINATES.items():
@@ -172,7 +174,7 @@ def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_settings(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
-    raw = read_yaml(DEFAULT_CONFIG)
+    raw = training_schema.complete_finetuning(training_schema.to_native(read_yaml(DEFAULT_CONFIG)))
     # Calibration stays in the resolved contract, so experiment YAML can select frames only.
     for group in ("state", "action"):
         coordinates = copy.deepcopy(policy_config.COORDINATES)
@@ -181,7 +183,8 @@ def load_settings(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
         )
         raw["policy"][group]["pose"]["coordinates"] = coordinates
     if path.resolve() != DEFAULT_CONFIG.resolve():
-        override = read_yaml(path)
+        # Translate explicit overrides before merging with the template defaults.
+        override = training_schema.experiment_to_native(read_yaml(path))
         if "sources" in override.get("data", {}):
             # Replace the dataset selection; keep the other template defaults.
             raw["data"].pop("repo_id", None)
@@ -192,7 +195,7 @@ def load_settings(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
         elif "image_size" in override.get("data", {}):
             raw["data"]["image_size"] = override["data"]["image_size"]
         policy_config.merge(raw, override)
-    return training_schema.to_native(raw)
+    return training_schema.complete_finetuning(raw)
 
 
 def resolve_settings(settings: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -258,6 +261,33 @@ def training_config_name(settings: dict[str, Any]) -> str:
     return name if arm == "both" else f"{name}_{arm}"
 
 
+def run_dir(settings: dict[str, Any]) -> Path:
+    return Path(settings["checkpoints"]["base_dir"]) / settings["experiment"]["name"]
+
+
+def checkpoint_dir(settings: dict[str, Any]) -> Path:
+    return run_dir(settings) / "checkpoints"
+
+
+def normalization_signature(settings: dict[str, Any]) -> dict:
+    return {
+        "data_root": settings["data"]["root"],
+        "repo_id": settings["data"].get("repo_id"),
+        "arm": settings["experiment"]["arm"],
+        "policy": policy_semantics(settings),
+        "cameras": list(selected_cameras(settings)),
+        "max_frames": settings["normalization"]["max_frames"],
+        **({"mixture": settings["mixture"]} if "mixture" in settings else {}),
+        **({"image_size": settings["data"]["image_size"]} if "image_size" in settings["data"] else {}),
+    }
+
+
+def normalization_cache_dir(settings: dict[str, Any]) -> Path:
+    signature = json.dumps(normalization_signature(settings), sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(signature.encode()).hexdigest()[:16]
+    return Path(settings["checkpoints"]["assets_dir"]) / fingerprint
+
+
 def _validate_fields(value, schema, path="settings"):
     if not isinstance(value, dict) or value.keys() != schema.keys():
         raise ValueError(f"{path} fields must be {sorted(schema)}")
@@ -276,7 +306,7 @@ def validate_settings(settings: dict[str, Any]) -> None:
     if size is not None and size != (224, 224):
         raise ValueError("OpenPI Pi05 requires data.image_size: [224, 224]")
     if settings["schema_version"] != training_schema.VERSION:
-        raise ValueError("New training configs require schema_version: 7")
+        raise ValueError(f"Native training configs require schema_version: {training_schema.VERSION}")
     policy_config.validate_policy(settings["policy"])
     if state_dimension(settings) > 32 and not settings["model"]["discrete_state_input"]:
         raise ValueError("Combined/history states wider than 32 require discrete_state_input: true")
@@ -473,7 +503,7 @@ def build_train_config(
                 "fsdp_devices",
             )
         },
-        assets_base_dir=settings["checkpoints"]["assets_dir"],
+        assets_base_dir=str(normalization_cache_dir(settings)),
         checkpoint_base_dir=settings["checkpoints"]["base_dir"],
         overwrite=settings["checkpoints"]["overwrite"],
         resume=settings["checkpoints"]["resume"],

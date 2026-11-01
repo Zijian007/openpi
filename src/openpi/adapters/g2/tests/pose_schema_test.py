@@ -19,7 +19,7 @@ from openpi.adapters.g2.transforms import G2Inputs
 
 def resolve(tmp_path, policy):
     path = tmp_path / "pose.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": 7, "policy": policy}))
+    path.write_text(yaml.safe_dump({"schema_version": 8, "policy": policy}))
     return g2_config.resolve_settings(g2_config.load_settings(path), {})
 
 

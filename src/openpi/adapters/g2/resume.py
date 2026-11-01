@@ -9,23 +9,27 @@ from openpi.adapters.g2 import config as g2_config
 RUN_FIELDS = {"num_train_steps", "num_workers", "log_interval", "save_interval", "keep_period", "fsdp_devices"}
 
 
-def resolve_resume(settings, extra_args, checkpoint_dir: Path):
+def latest_checkpoint(checkpoint_dir: Path) -> Path:
+    """Select the newest committed checkpoint with model and optimizer metadata."""
     candidates = sorted(
         (path for path in checkpoint_dir.glob("*") if path.is_dir() and path.name.isdecimal()),
         key=lambda path: int(path.name),
         reverse=True,
     )
+    required = ("_CHECKPOINT_METADATA", "train_state/_METADATA", "params/_METADATA")
     for checkpoint in candidates:
-        required = ("_CHECKPOINT_METADATA", "train_state/_METADATA", "params/_METADATA")
         if not all((checkpoint / name).is_file() for name in required):
             continue
         metadata = json.loads((checkpoint / "_CHECKPOINT_METADATA").read_text())
         if metadata.get("commit_timestamp_nsecs"):
-            break
-    else:
-        raise FileNotFoundError(
-            f"Resume requires a complete checkpoint in {checkpoint_dir}; no new training was started"
-        )
+            return checkpoint
+    raise FileNotFoundError(
+        f"Resume requires a complete checkpoint in {checkpoint_dir}; no new training was started"
+    )
+
+
+def resolve_resume(settings, extra_args, checkpoint_dir: Path):
+    checkpoint = latest_checkpoint(checkpoint_dir)
 
     saved = g2_config.read_yaml(checkpoint / "assets" / g2_config.CHECKPOINT_CONFIG)
     old = g2_config.normalize_settings(saved["settings"])
@@ -77,6 +81,8 @@ def resolve_resume(settings, extra_args, checkpoint_dir: Path):
     resolved["training"]["decay_steps"] = decay_steps
     resolved["runtime"] = copy.deepcopy(settings["runtime"])
     resolved["checkpoints"] = copy.deepcopy(settings["checkpoints"])
+    # A migrated run may have a new name to disambiguate old model-specific names.
+    resolved["experiment"]["name"] = settings["experiment"]["name"]
     # Disabling external logging is independent of the training state. Enabling it
     # on a run without a W&B ID is rejected before model initialization by init_wandb.
     resolved["wandb"]["mode"] = settings["wandb"]["mode"]

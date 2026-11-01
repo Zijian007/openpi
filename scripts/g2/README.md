@@ -35,7 +35,7 @@ scripts/g2/
 ```
 
 所有命令从 OpenPI 仓库根目录运行；配置中的相对数据、权重和输出路径也以仓库根目录为基准。
-数据、统计量和权重分别放在仓库的 `data/`、`assets/`、`checkpoints/`，不放在脚本目录。
+数据放在 `data/`；每次实验放在 `runs/<experiment.name>/`；共享归一化缓存放在 `.cache/g2/norm/`，不放在脚本目录。
 
 ## 快速开始
 
@@ -62,7 +62,7 @@ scripts/g2/
    ```
 
 部署从 checkpoint 的 `assets/g2_train_config.yaml` 恢复训练语义。`policy` 字段见 [公共配置速查](../../../g2-policy-protocol/docs/policy-config.md)；本仓库怎么覆盖 YAML、微调模块和短跑见下表。
-默认微调为 vision/language LoRA、动作专家全参；后端选项集中在 `backend_options.openpi`，其中 `run.smoke` 独立控制短跑；`train_full.sh` 将三个模块全部设为 full。训练字段和配置版本由本仓库维护，详见 [训练说明](docs/training.md#yaml-归属与-checkpoint)；`policy` 的状态、动作和时序语义由共享包约束。
+默认微调为 vision/language LoRA、动作专家全参；GPU/FSDP 集中在 `runtime`，模块策略在 `finetuning`，`training.smoke` 独立控制短跑；`train_full.sh` 将三个模块全部设为 full。训练字段和配置版本由本仓库维护，详见 [训练说明](docs/training.md#yaml-归属与-checkpoint)；`policy` 的状态、动作和时序语义由共享包约束。
 
 ## 使用文档
 

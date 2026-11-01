@@ -2,7 +2,7 @@
 
 [返回入口](../README.md) · [通信与架构](architecture.md) · [RTC](rtc.md)
 
-`configs/deploy.yaml` 选择 checkpoint 和进程设置，`serve_policy.sh` 调用专属 `scripts/g2/deploy/serve_policy.py`，通过 G2 适配层加载模型。
+`configs/deploy.yaml` 的 `checkpoint` 指向 `runs/<experiment.name>/checkpoints/<step>/`，选择权重和进程设置，`serve_policy.sh` 调用专属 `scripts/g2/deploy/serve_policy.py`，通过 G2 适配层加载模型。
 原生 `scripts/serve_policy.py` 保持原生协议，不处理 G2 preset 或 G2 控制器。
 默认 **warmup**：监听前进行两次普通推理；启用 RTC 时再进行两次引导推理，提前完成 JAX JIT；`--no-warmup` 可关。
 `JAX_COMPILATION_CACHE_DIR` 在 `scripts/g2/_env.sh` 里指到 `$OPENPI_DATA_HOME/jax_compile_cache`。
@@ -24,7 +24,7 @@ smoke 客户端将监听地址 `0.0.0.0` / `::` 换为本机回环地址；连�
 ```bash
 # configs/deploy.yaml 默认 :8001；LeRobot 默认 :8002，可同时运行
 CUDA_VISIBLE_DEVICES=0 bash scripts/g2/deploy/serve_policy.sh \
-  --policy.dir checkpoints/pi05_g2_vr_low_mem/<exp>/<step>
+  --policy.dir runs/<experiment.name>/checkpoints/<step>
 # 省略 --policy.dir 使用 configs/deploy.yaml 的 checkpoint；训练语义和 arm 从快照恢复
 # healthz 在 warmup 结束后才 OK；日志应有 warmup step=0 infer_ms≈10s+，step=1 ≈100ms
 
@@ -37,3 +37,5 @@ bash scripts/g2/deploy/smoke_infer_client.sh   # 端口对齐 configs/deploy.yam
 | `deploy/smoke_infer_client.sh` | 假观测 round-trip |
 
 域控：`start_openpi_pi05_infer.sh`（`openpi_pi05_client`）。详见 [openpi-pi05-deploy-g2.md](../../../../g2_wzj_docs/ops/ml/openpi-pi05-deploy-g2.md)。
+
+迁移不改变 step 目录内部的 `params/`、`train_state/` 和 `assets/`；旧路径兼容入口已清理，部署使用新的 runs/ 路径。已在本地对三组旧实验的最新 checkpoint 完成 GPU 加载、RTC 预热和 WebSocket smoke 推理验证。

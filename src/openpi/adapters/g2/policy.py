@@ -53,7 +53,7 @@ def create_trained_policy(checkpoint_dir, **kwargs) -> G2Policy:
     checkpoint_dir = Path(download.maybe_download(str(checkpoint_dir)))
     snapshot = checkpoint_dir / "assets" / g2_config.CHECKPOINT_CONFIG
     if not snapshot.is_file():
-        raise ValueError("G2 serving requires a g2_train_config.yaml snapshot (schema_version: 7)")
+        raise ValueError("G2 serving requires a g2_train_config.yaml snapshot (schema_version: 8)")
     payload = g2_config.read_yaml(snapshot)
     train_config = g2_config.build_train_config(
         g2_config.normalize_settings(payload["settings"]), tuple(payload["extra_args"])
@@ -74,7 +74,12 @@ def create_trained_policy(checkpoint_dir, **kwargs) -> G2Policy:
         "requires_joint_state": g2_config.needs_joint_state(settings),
         "requires_prompt": True,
     }
-    configured = dataclasses.replace(train_config, policy_metadata=metadata)
+    configured = dataclasses.replace(
+        train_config, policy_metadata=metadata,
+        data=dataclasses.replace(train_config.data, assets=dataclasses.replace(
+            train_config.data.assets, assets_dir=str(checkpoint_dir / "assets"),
+        )),
+    )
     return G2Policy(native_policy_config.create_trained_policy(configured, checkpoint_dir, **kwargs), settings)
 
 

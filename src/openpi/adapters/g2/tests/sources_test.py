@@ -73,6 +73,21 @@ def test_mixture_asset_survives_without_training_data(tmp_path, monkeypatch):
     assert data.asset_id == data.norm_stats == expected
 
 
+def test_auto_weights_preserve_natural_mixture_and_snapshot(tmp_path):
+    settings = settings_for(tmp_path)
+    for source in settings["data"]["sources"]:
+        source["weight"] = "auto"
+    (tmp_path / "b/meta/episodes.jsonl").write_text(json.dumps({"episode_index": 0, "length": 4}))
+    prepare_mixture(settings, base_dir=tmp_path)
+    assert settings["mixture"]["proportions"] == [2 / 3, 1 / 3]
+    built = g2_config.build_train_config(settings)
+    assert [source["weight"] for source in built.data.sources] == [None, None]
+    payload = yaml.safe_load(built.checkpoint_assets[g2_config.CHECKPOINT_CONFIG])
+    assert [source["weight"] for source in payload["settings"]["data"]["sources"]] == ["auto", "auto"]
+    restored = g2_config.build_train_config(g2_config.normalize_settings(payload["settings"]))
+    assert restored.data.mixture == built.data.mixture
+
+
 def test_fingerprint_changes_with_metadata(tmp_path):
     settings = settings_for(tmp_path)
     previous = settings["mixture"]["fingerprint"]
@@ -109,7 +124,7 @@ def test_multi_source_resume_uses_saved_asset_and_checks_identity(tmp_path):
 def test_multi_source_dry_run_reports_realized_proportions(tmp_path, capsys):
     settings = settings_for(tmp_path)
     source = g2_config.public_settings(settings)
-    source["backend_options"]["openpi"].pop("mixture")
+    source["resolved"].pop("mixture")
     config = tmp_path / "train.yaml"
     config.write_text(yaml.safe_dump(source))
     spec = importlib.util.spec_from_file_location("g2_source_pipeline_test",

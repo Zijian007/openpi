@@ -1,6 +1,7 @@
 """G2 presets, separate from the native OpenPI configuration registry."""
 
 import dataclasses
+from pathlib import Path
 
 import flax.nnx as nnx
 
@@ -12,9 +13,25 @@ from openpi.training import weight_loaders
 from openpi.training.config import DataConfig
 from openpi.training.config import TrainConfig
 
+
+@dataclasses.dataclass(frozen=True)
+class G2TrainConfig(TrainConfig):
+    """Keep G2 artifacts under one run, without changing native OpenPI paths."""
+
+    @property
+    def checkpoint_dir(self) -> Path:
+        if not self.exp_name:
+            raise ValueError("experiment.name must be set")
+        return (Path(self.checkpoint_base_dir) / self.exp_name / "checkpoints").resolve()
+
+    @property
+    def assets_dirs(self) -> Path:
+        return Path(self.assets_base_dir).resolve()
+
+
 # Base model template; explicit YAML module modes determine the actual training model.
 _DEFAULT_REPO_ID = "vr/Sing_TeaPi/lerobot_v21"
-_BASE = TrainConfig(
+_BASE = G2TrainConfig(
     name="pi05_g2_vr",
     model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
     data=LeRobotG2DataConfig(

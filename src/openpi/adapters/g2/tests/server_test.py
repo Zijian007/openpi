@@ -74,8 +74,6 @@ def test_configured_camera_subset_and_state_source_reach_policy(requires_joint_s
     ("quantity", "space", "dim"),
     [
         ("joint_position", "joint", 16),
-        ("joint_velocity", "joint", 16),
-        ("joint_torque", "joint", 16),
     ],
 )
 def test_non_pose_wire_uses_shared_contract_and_rejects_private_dialect(accepted, quantity, space, dim):

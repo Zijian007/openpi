@@ -19,14 +19,14 @@ from openpi.adapters.g2.transforms import G2Inputs
 
 def resolve(tmp_path, policy):
     path = tmp_path / "branches.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": 7, "policy": policy}))
+    path.write_text(yaml.safe_dump({"schema_version": 8, "policy": policy}))
     return config.resolve_settings(config.load_settings(path), {})
 
 
 def test_default_tree_and_self_contained_snapshot():
     resolved = config.resolve_settings(config.load_settings(), {})
     public = config.public_settings(resolved)
-    assert public["schema_version"] == 7
+    assert public["schema_version"] == 8
     assert public["policy"].keys() == {"state", "action", "timing"}
     for group in ("state", "action"):
         assert public["policy"][group].keys() == {"joint", "pose"}
@@ -43,11 +43,11 @@ def test_default_tree_and_self_contained_snapshot():
     assert preview["label_column"] == "action.pose"
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, True, "7"])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, True, "8"])
 def test_other_schemas_are_rejected(tmp_path, version):
     path = tmp_path / "version.yaml"
     path.write_text(yaml.safe_dump({"schema_version": version}))
-    with pytest.raises(ValueError, match="schema_version: 7"):
+    with pytest.raises(ValueError, match="schema_version: 8"):
         config.load_settings(path)
 
 
@@ -155,8 +155,6 @@ def test_combined_state_encodes_each_branch_independently(tmp_path, arm, pose_re
     ("kind", "quantity", "suffix", "width"),
     [
         ("joint", "position", "joint", 8),
-        ("joint", "velocity", "joint_velocity", 8),
-        ("joint", "torque", "joint_torque", 8),
         ("pose", "pose", "pose", 10),
     ],
 )
@@ -181,8 +179,7 @@ def test_branch_quantity_and_source_select_lerobot_labels(tmp_path, kind, quanti
             pose = np.tile(matrix_pose(np.eye(4), 0.4), 2)
             pose[[0, 10]] = value
             row[f"{prefix}.pose"] = pose
-            for name, dim in (("joint", 16), ("joint_velocity", 16), ("joint_torque", 16)):
-                row[f"{prefix}.{name}"] = np.full(dim, value, np.float32)
+            row[f"{prefix}.joint"] = np.full(16, value, np.float32)
         rows.append(row)
 
     class Dataset:
@@ -233,8 +230,9 @@ def test_joint_position_delta_preserves_grippers_and_round_trips(tmp_path, scope
 
 
 @pytest.mark.parametrize("quantity", ["velocity", "torque"])
-def test_relative_joint_velocity_and_torque_are_rejected(tmp_path, quantity):
-    with pytest.raises(ValueError, match="require delta: false"):
+@pytest.mark.parametrize("delta", [False, True])
+def test_removed_joint_quantities_are_rejected(tmp_path, quantity, delta):
+    with pytest.raises(ValueError, match="policy.action.joint.quantity"):
         resolve(
             tmp_path,
             {
@@ -243,9 +241,11 @@ def test_relative_joint_velocity_and_torque_are_rejected(tmp_path, quantity):
                     "joint": {
                         "enabled": True,
                         "quantity": quantity,
-                        "delta": True,
-                        "method": "component",
-                        "reference": {"source": "state", "scope": "chunk"},
+                        "delta": delta,
+                        "method": "component" if delta else None,
+                        "reference": (
+                            {"source": "state", "scope": "chunk"} if delta else {"source": None, "scope": None}
+                        ),
                     },
                 }
             },

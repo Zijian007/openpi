@@ -5,7 +5,7 @@ Prerequisite (another terminal)::
 
     bash scripts/g2/deploy/serve_policy.sh
     # or override the YAML checkpoint:
-    bash scripts/g2/deploy/serve_policy.sh --policy.dir checkpoints/<config>/<exp>/<step>
+    bash scripts/g2/deploy/serve_policy.sh --policy.dir runs/<experiment.name>/checkpoints/<step>
 
 Then::
 

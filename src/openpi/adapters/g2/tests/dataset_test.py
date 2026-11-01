@@ -64,28 +64,23 @@ def test_upsampling_interpolates_rotation_on_so3():
     np.testing.assert_allclose(sample["state.pose"][3:6], expected, atol=1e-6)
 
 
-def test_joint_velocity_derivatives_preserve_absolute_grippers():
+def test_joint_position_targets_preserve_recorded_values_and_grippers():
     policy = copy.deepcopy(POLICY_DEFAULTS)
-    set_joint_action(policy, "velocity")
+    set_joint_action(policy)
     policy["timing"]["sample_hz"] = 4
     sample = TemporalDataset(RecordedDataset(), policy, ("head_color",), 5)[0]["g2.actions"]
     assert sample.shape == (5, 16)
-    np.testing.assert_allclose(sample[:, 0], 4)
+    np.testing.assert_allclose(sample[:, 0], [10, 11, 12, 13, 13])
     np.testing.assert_allclose(sample[:, 7], [10, 11, 12, 13, 13])
 
 
-def test_torque_requires_recorded_torque_not_position_differences():
+def test_joint_position_requires_recorded_targets():
     policy = copy.deepcopy(POLICY_DEFAULTS)
-    set_joint_action(policy, "torque")
-    with pytest.raises(ValueError, match="recorded action.joint_torque"):
-        TemporalDataset(RecordedDataset(), policy, ("head_color",), 2)[0]
+    set_joint_action(policy)
     raw = RecordedDataset()
-    raw.meta.features["action.joint_torque"] = {}
-    for row in raw.hf_dataset:
-        row["action.joint_torque"] = np.arange(16, dtype=np.float32)
-    np.testing.assert_array_equal(
-        TemporalDataset(raw, policy, ("head_color",), 2)[0]["g2.actions"], np.tile(np.arange(16), (2, 1))
-    )
+    raw.meta.features.pop("action.joint")
+    with pytest.raises(ValueError, match="recorded action.joint"):
+        TemporalDataset(raw, policy, ("head_color",), 2)[0]
 
 
 def test_combined_history_input_preserves_all_state_values_and_frames():

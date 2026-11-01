@@ -13,7 +13,7 @@ from openpi.adapters.g2.training_config import to_native
 @pytest.fixture
 def source():
     return {
-        "schema_version": 7,
+        "schema_version": 8,
         "backend": "openpi",
         "experiment": {"name": "test", "arm": "right"},
         "data": {"root": "data", "repo_id": "org/task", "cameras": None},
@@ -24,37 +24,32 @@ def source():
             "steps": 10000,
             "num_workers": 4,
             "seed": 42,
-            "log_interval": 50,
-            "save_interval": 1000,
-            "learning_rate": 2.5e-5,
+            "lr_schedule": {"peak_lr": 2.5e-5},
         },
-        "runtime": {"gpus": [0], "resume": False},
-        "wandb": {"mode": "off", "project": "test"},
-        "backend_options": {"openpi": {}},
+        "runtime": {"gpus": [0]},
+        "checkpoints": {"resume": False, "save_interval": 1000},
+        "logging": {"log_interval": 50, "wandb": {"mode": "off", "project": "test"}},
     }
 
 
 def test_openpi_snapshot_round_trips_all_training_settings(source):
-    source["backend_options"] = {
-        "openpi": {
-            "training": {"warmup_steps": 1000, "keep_period": None},
-            "model": {"discrete_state_input": True},
-            "checkpoints": {"base_dir": "checkpoints", "assets_dir": "assets", "overwrite": False},
-            "runtime": {"mem_fraction": 0.9},
-        }
-    }
+    source["training"]["lr_schedule"]["warmup_steps"] = 1000
+    source["model"]["discrete_state_input"] = True
+    source["checkpoints"].update(base_dir="checkpoints", assets_dir="assets", overwrite=False, keep_period=None)
+    source["runtime"]["mem_fraction"] = 0.9
     native = to_native(source)
     assert native["training"]["num_train_steps"] == 10000
     assert native["training"]["peak_lr"] == 2.5e-5
     assert native["checkpoints"]["resume"] is False
     assert native["model"]["params_path"] == "base"
-    assert openpi_snapshot(native) == source
+    assert openpi_snapshot(native)["schema_version"] == 8
+    assert to_native(openpi_snapshot(native)) == native
 
 
-@pytest.mark.parametrize("version", [None, 5, 6, "7", True])
+@pytest.mark.parametrize("version", [None, 5, 6, 7, 9, 7.0, 8.0, "7", "8", True])
 def test_unsupported_training_version_is_rejected(source, version):
     source["schema_version"] = version
-    with pytest.raises(ValueError, match="schema_version: 7"):
+    with pytest.raises(ValueError, match="schema_version: 8"):
         to_native(source)
 
 
@@ -64,7 +59,7 @@ def test_other_backend_is_rejected(source):
         to_native(source)
 
 
-@pytest.mark.parametrize("section", [None, "model", "training", "runtime", "wandb", "backend_options"])
+@pytest.mark.parametrize("section", [None, "model", "training", "runtime", "logging", "checkpoints"])
 def test_unknown_entry_fields_are_rejected(source, section):
     target = source if section is None else source[section]
     target["typo"] = 1
@@ -72,7 +67,7 @@ def test_unknown_entry_fields_are_rejected(source, section):
         to_native(source)
 
 
-@pytest.mark.parametrize("section", ["model", "training", "runtime", "wandb", "backend_options"])
+@pytest.mark.parametrize("section", ["model", "training", "runtime", "logging", "checkpoints"])
 def test_entry_sections_must_be_mappings(source, section):
     source[section] = None
     with pytest.raises(TypeError, match="must be a YAML mapping"):
@@ -98,6 +93,6 @@ result = to_native(json.loads(sys.argv[1]))
 assert result
 """
     result = subprocess.run(
-        [sys.executable, "-c", code, json.dumps(source)], capture_output=True, text=True, timeout=10,
+        [sys.executable, "-c", code, json.dumps(source)], capture_output=True, text=True, timeout=10, check=False,
     )
     assert result.returncode == 0, result.stderr

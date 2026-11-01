@@ -1,104 +1,147 @@
-"""OpenPI training YAML and checkpoint snapshots; independent of the wire package."""
+"""Versioned G2 training YAML and snapshots; no model/framework imports."""
 
 import copy
 
-VERSION = 7
-
-TRAINING_FIELDS = {
-    "batch_size": "batch_size", "steps": "num_train_steps", "num_workers": "num_workers",
-    "seed": "seed", "log_interval": "log_interval", "save_interval": "save_interval",
-    "learning_rate": "peak_lr",
+VERSION = 8
+LORA_DEFAULTS = {
+    "vision": {"rank": 16, "alpha": 16.0, "targets": ["attention"], "rslora": False},
+    "language": {"rank": 16, "alpha": 16.0, "targets": ["attention", "ffn"], "rslora": False},
+    "action_expert": {"rank": 32, "alpha": 32.0, "targets": ["attention", "ffn"], "rslora": False},
 }
-
-OPENPI_OPTIONS = {
-    "mixture": {"asset_id", "fingerprint", "proportions", "plan", "lengths"},
-    "finetuning": None,
-    "run": {"smoke"},
-    "model": {"discrete_state_input"},
-    "training": {"fsdp_devices", "keep_period", "warmup_steps", "decay_steps", "decay_lr"},
-    "checkpoints": {"base_dir", "assets_dir", "overwrite"},
-    "normalization": {"mode", "max_frames"},
-    "runtime": {"mem_fraction"},
-}
-
+FINETUNING_FIELDS = {module: {"mode": None, "lora": {"rank", "alpha", "targets", "rslora"}} for module in LORA_DEFAULTS}
 
 SOURCE_FIELDS = {
     "schema_version": None,
     "backend": None,
     "experiment": None,
+    "runtime": {"gpus", "fsdp_devices", "mem_fraction"},
+    "model": {"type", "pretrained_path", "discrete_state_input"},
+    "finetuning": FINETUNING_FIELDS,
     "data": None,
+    "training": {
+        "batch_size": None,
+        "steps": None,
+        "seed": None,
+        "num_workers": None,
+        "smoke": None,
+        "lr_schedule": {"peak_lr", "warmup_steps", "decay_steps", "decay_lr"},
+    },
+    "checkpoints": {"base_dir", "assets_dir", "resume", "overwrite", "save_interval", "keep_period"},
+    "normalization": {"mode", "max_frames"},
+    "logging": {"log_interval": None, "wandb": {"mode", "project"}},
     "policy": None,
-    "model": {"type", "pretrained_path"},
-    "training": TRAINING_FIELDS.keys(),
-    "runtime": {"gpus", "resume"},
-    "wandb": {"mode", "project"},
-    "backend_options": {"openpi"},
+    # Computed by the mixture planner; persisted for self-contained snapshots.
+    "resolved": {"mixture": {"asset_id", "fingerprint", "proportions", "plan", "lengths"}},
 }
 
+# Public path -> native path. Native TrainConfig/resume semantics stay unchanged.
+V8_PATHS = {
+    **{(name,): (name,) for name in ("experiment", "finetuning", "data", "normalization", "policy")},
+    **{("runtime", key): ("runtime", key) for key in ("gpus", "mem_fraction")},
+    ("runtime", "fsdp_devices"): ("training", "fsdp_devices"),
+    ("model", "pretrained_path"): ("model", "params_path"),
+    ("model", "discrete_state_input"): ("model", "discrete_state_input"),
+    **{("training", key): ("training", key) for key in ("batch_size", "seed", "num_workers")},
+    ("training", "steps"): ("training", "num_train_steps"),
+    ("training", "smoke"): ("run", "smoke"),
+    **{
+        ("training", "lr_schedule", key): ("training", key)
+        for key in ("peak_lr", "warmup_steps", "decay_steps", "decay_lr")
+    },
+    **{("checkpoints", key): ("checkpoints", key) for key in ("base_dir", "assets_dir", "resume", "overwrite")},
+    **{("checkpoints", key): ("training", key) for key in ("save_interval", "keep_period")},
+    ("logging", "log_interval"): ("training", "log_interval"),
+    ("logging", "wandb"): ("wandb",),
+    ("resolved", "mixture"): ("mixture",),
+}
+_MISSING = object()
 
-def _validate_fields(value, allowed, path):
+
+def _validate_fields(value, schema, path):
     if not isinstance(value, dict):
         raise TypeError(f"{path} must be a YAML mapping")
-    unknown = value.keys() - allowed
+    unknown = value.keys() - schema.keys() if isinstance(schema, dict) else value.keys() - schema
     if unknown:
         raise ValueError(f"Unknown YAML field: {path}.{min(unknown)}")
+    if isinstance(schema, dict):
+        for key, child in schema.items():
+            if child is not None and key in value:
+                _validate_fields(value[key], child, f"{path}.{key}")
+
+
+def _get(tree, path):
+    for key in path:
+        if not isinstance(tree, dict) or key not in tree:
+            return _MISSING
+        tree = tree[key]
+    return tree
+
+
+def _put(tree, path, value):
+    for key in path[:-1]:
+        tree = tree.setdefault(key, {})
+    tree[path[-1]] = copy.deepcopy(value)
 
 
 def to_native(source):
+    """Translate explicit v8 fields, without inserting inherited defaults."""
+    if not isinstance(source, dict):
+        raise TypeError("settings must be a YAML mapping")
+    version = source.get("schema_version")
+    if type(version) is not int or version != VERSION:
+        raise ValueError("openpi training requires schema_version: 8")
     _validate_fields(source, SOURCE_FIELDS, "settings")
-    if source.get("schema_version") != VERSION:
-        raise ValueError(f"openpi training requires schema_version: {VERSION}")
     if source.get("backend") != "openpi":
         raise ValueError("backend must be openpi for this training entry point")
-    for section, allowed in SOURCE_FIELDS.items():
-        if allowed is not None:
-            _validate_fields(source.get(section, {}), allowed, section)
-    options = source.get("backend_options", {}).get("openpi", {})
-    _validate_fields(options, OPENPI_OPTIONS.keys(), "backend_options.openpi")
-    for section, allowed in OPENPI_OPTIONS.items():
-        if allowed is not None:
-            _validate_fields(options.get(section, {}), allowed, f"backend_options.openpi.{section}")
-    model_type = source.get("model", {}).get("type", "pi05")
-    if model_type != "pi05":
+    if source.get("model", {}).get("type", "pi05") != "pi05":
         raise ValueError("The OpenPI G2 training entry point supports model.type: pi05")
-    result = copy.deepcopy(options)
-    result["schema_version"] = VERSION
-    for section in ("experiment", "data", "policy"):
-        if section in source:
-            result[section] = copy.deepcopy(source[section])
-    training = result.setdefault("training", {})
-    for key, value in source.get("training", {}).items():
-        training[TRAINING_FIELDS[key]] = value
-    if "pretrained_path" in source.get("model", {}):
-        result.setdefault("model", {})["params_path"] = source["model"]["pretrained_path"]
-    runtime = source.get("runtime", {})
-    if "gpus" in runtime:
-        result.setdefault("runtime", {})["gpus"] = copy.deepcopy(runtime["gpus"])
-    if "resume" in runtime:
-        result.setdefault("checkpoints", {})["resume"] = runtime["resume"]
-    if "wandb" in source:
-        result["wandb"] = copy.deepcopy(source["wandb"])
+    result = {"schema_version": VERSION}
+    for public, native in V8_PATHS.items():
+        value = _get(source, public)
+        if value is not _MISSING:
+            _put(result, native, value)
     return result
+
+
+def experiment_to_native(source):
+    """Allow omitted version/backend in partial v8 overrides."""
+    source = copy.deepcopy(source)
+    source.setdefault("schema_version", VERSION)
+    source.setdefault("backend", "openpi")
+    return to_native(source)
+
+
+def complete_finetuning(settings):
+    """Fill omitted LoRA options after inheritance, including inactive modules."""
+    for module, spec in settings.get("finetuning", {}).items():
+        if module in LORA_DEFAULTS:
+            options = copy.deepcopy(LORA_DEFAULTS[module])
+            options.update(spec.get("lora", {}))
+            spec["lora"] = options
+    return settings
 
 
 def openpi_snapshot(settings):
-    """Serialize resolved OpenPI settings as a self-contained public snapshot."""
-    native = copy.deepcopy(settings)
+    """Serialize complete native settings as a self-contained v8 snapshot."""
     result = {"schema_version": VERSION, "backend": "openpi"}
-    for section in ("experiment", "data", "policy"):
-        if section in native:
-            result[section] = native.pop(section)
-    runtime = native.pop("runtime", {})
-    result["runtime"] = {"gpus": runtime.pop("gpus"), "resume": native["checkpoints"].pop("resume")}
-    training = {}
-    native.pop("schema_version", None)
-    model = native["model"]
-    result["model"] = {"type": "pi05", "pretrained_path": model.pop("params_path")}
-    for key, name in TRAINING_FIELDS.items():
-        if name in native["training"]:
-            training[key] = native["training"].pop(name)
-    native["runtime"] = runtime
-    result["wandb"] = native.pop("wandb", {})
-    result["training"] = training
-    result["backend_options"] = {"openpi": native}
-    return result
+    for public, native in V8_PATHS.items():
+        value = _get(settings, native)
+        if value is not _MISSING:
+            _put(result, public, value)
+    result.setdefault("model", {})["type"] = "pi05"
+    order = (
+        "schema_version",
+        "backend",
+        "experiment",
+        "runtime",
+        "model",
+        "finetuning",
+        "data",
+        "training",
+        "checkpoints",
+        "normalization",
+        "logging",
+        "policy",
+        "resolved",
+    )
+    return {key: result[key] for key in order if key in result}

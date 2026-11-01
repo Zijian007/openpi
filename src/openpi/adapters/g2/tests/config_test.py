@@ -7,11 +7,44 @@ import yaml
 from openpi.adapters.g2 import config as g2_config
 
 
+def test_g2_paths_group_one_experiment_and_leave_native_paths_unchanged(tmp_path):
+    from openpi.training.config import TrainConfig
+
+    settings = g2_config.resolve_settings(g2_config.load_settings(), {
+        "checkpoint_base_dir": str(tmp_path / "runs"),
+        "assets_base_dir": str(tmp_path / "cache"),
+        "exp_name": "test_run",
+    })
+    config = g2_config.build_train_config(settings)
+    assert config.checkpoint_dir == tmp_path / "runs/test_run/checkpoints"
+    assert config.assets_dirs == g2_config.normalization_cache_dir(settings)
+    native = TrainConfig(name="native", exp_name="run", checkpoint_base_dir=str(tmp_path))
+    assert native.checkpoint_dir == tmp_path / "native/run"
+
+
+def test_normalization_fingerprint_tracks_semantics_but_not_run_name_or_finetuning():
+    import copy
+
+    settings = g2_config.load_settings()
+    cache = g2_config.normalization_cache_dir(settings)
+    other = copy.deepcopy(settings)
+    other["experiment"]["name"] = "another_run"
+    other["finetuning"]["vision"]["mode"] = "full"
+    assert g2_config.normalization_cache_dir(other) == cache
+    other["policy"]["action"]["pose"]["method"] = "se3"
+    assert g2_config.normalization_cache_dir(other) != cache
+    other = copy.deepcopy(settings)
+    other["normalization"]["max_frames"] = 100
+    assert g2_config.normalization_cache_dir(other) != cache
+
+
 def test_yaml_off_is_text_and_scientific_notation_is_numeric(tmp_path):
     path = tmp_path / "scalars.yaml"
-    path.write_text("wandb: {mode: off}\ntraining: {learning_rate: 1e-5}\nresume: false")
+    path.write_text("logging: {wandb: {mode: off}}\ntraining: {lr_schedule: {peak_lr: 1e-5}}\ncheckpoints: {resume: false}")
     assert g2_config.read_yaml(path) == {
-        "wandb": {"mode": "off"}, "training": {"learning_rate": 1e-5}, "resume": False,
+        "logging": {"wandb": {"mode": "off"}},
+        "training": {"lr_schedule": {"peak_lr": 1e-5}},
+        "checkpoints": {"resume": False},
     }
 
 
@@ -143,7 +176,7 @@ def test_smoke_uses_valid_schedule_and_disables_wandb():
 
 def test_yaml_accepts_wandb_on_and_scientific_learning_rate(tmp_path):
     path = tmp_path / "experiment.yaml"
-    path.write_text("wandb:\n  mode: on\ntraining:\n  learning_rate: 1e-5\n")
+    path.write_text("logging:\n  wandb:\n    mode: on\ntraining:\n  lr_schedule:\n    peak_lr: 1e-5\n")
     settings = g2_config.resolve_settings(g2_config.load_settings(path), {})
     assert settings["wandb"]["mode"] == "on"
     assert settings["training"]["peak_lr"] == 1e-5

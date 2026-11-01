@@ -1,0 +1,145 @@
+# Sing_TeaPi 实验；保留升级前的训练参数和续训设置。
+
+schema_version: 8
+backend: openpi
+
+# 实验名称与选臂
+experiment:
+  name: Sing_TeaPi
+  arm: right
+
+# 设备与多卡：gpus 和 FSDP 分片数一起调整
+runtime:
+  # 已有 CUDA_VISIBLE_DEVICES 优先于此处的 GPU 列表。
+  gpus: [3]
+  fsdp_devices: 1  # 1 不分片；双卡分片：gpus: [2, 3]、此处设 2
+  mem_fraction: 0.9  # XLA_PYTHON_CLIENT_MEM_FRACTION 环境变量优先
+
+# 模型与初始化权重
+model:
+  type: pi05
+  pretrained_path: gs://openpi-assets/checkpoints/pi05_base/params
+  discrete_state_input: true
+
+# 模块微调：frozen | lora | full；只需为 lora 模式填写适配参数
+finetuning:
+  vision:
+    mode: lora
+    lora:
+      rank: 16
+      alpha: 16.0
+      targets: [attention]
+      rslora: false
+  language:
+    mode: lora
+    lora:
+      rank: 16
+      alpha: 16.0
+      targets: [attention, ffn]
+      rslora: false
+  action_expert:
+    mode: full
+
+# 数据集、混合权重与相机
+data:
+  root: /home/zijianwang/openpi/data
+  cameras: null
+  image_size: [224, 224]
+  sources:
+    - path: vr/20261022_layer3_right_ChaPai/lerobot_v21
+      weight: 1
+    - path: vr/20261030_layer3_right_ChaPai/lerobot_v21
+      weight: 1
+
+# 训练与学习率调度
+training:
+  batch_size: 8  # 全局 batch；须可被可见 GPU 数整除
+  seed: 42
+  num_workers: 4
+  # 目标总步数；续训时不是额外步数。
+  steps: 50000
+  smoke: false  # 短跑默认 batch=1、20 步，保留微调策略
+  lr_schedule:
+    peak_lr: 2.5e-05
+    warmup_steps: 1000
+    decay_steps: null  # 新训练跟随总步数；续训保留原衰减周期
+    decay_lr: 2.5e-06
+
+# checkpoint 位置、恢复与保存策略
+checkpoints:
+  base_dir: ./runs          # 每次实验：runs/<experiment.name>/
+  assets_dir: ./.cache/g2/norm  # 共享归一化缓存；部署只读 checkpoint/assets
+  # true 恢复当前实验最新完整 checkpoint；优先于 overwrite。
+  resume: true
+  overwrite: false
+  save_interval: 5000
+  # 已保存且 step 能被此值整除的 checkpoint 长期保留；null 仅留最新。
+  keep_period: 5000
+
+# 归一化统计量；续训使用 checkpoint 中保存的统计量
+normalization:
+  mode: force
+  max_frames: null
+
+# 控制台指标与 W&B
+logging:
+  log_interval: 50
+  wandb:
+    mode: auto  # auto：正常训练开启，smoke 关闭；也可 on / off
+    project: G2_openpi
+
+# 状态、动作和时序；训练与部署共同使用的完整数值约定
+policy:
+  # 输入由 data.cameras、state 和数据集任务文本共同决定。
+  # state 至少启用一支，可同时启用；action 恰好启用一支。夹爪始终保持绝对值。
+  state:
+    joint:
+      enabled: false
+      delta: false
+      method: null             # delta=true 时关节只能 component
+      reference:
+        source: null           # state | action
+        scope: null            # chunk | step；相对 source: state 需要 history_steps > 1
+    pose:
+      enabled: true            # 状态固定读取实测数据
+      coordinates:
+        parent_frame: base_link # base_link | arm_base_link；当前观测时刻固定参考系
+        ee_frame: flange       # flange；命名 TCP 需要标定
+        rotation: rot6d        # rot6d | quaternion（xyzw）| axis_angle
+      delta: false
+      method: null             # component = 分量差；se3 = inv(T_ref)@T，仅 pose
+      reference:
+        source: null
+        scope: null
+  action:
+    joint:
+      enabled: false
+      quantity: position       # 仅 position，支持绝对值或 delta
+      source: action           # action 学习 action.* 指令；state 学习 state.* 实测
+      delta: false
+      method: null
+      reference:
+        source: null
+        scope: null
+    pose:
+      enabled: true
+      quantity: pose           # 末端位姿目标
+      source: action           # action 学习 action.* 指令；state 学习 state.* 实测
+      coordinates:
+        parent_frame: base_link # arm_base_link 需要数据集 state.arm_base
+        ee_frame: flange
+        rotation: rot6d
+      delta: true
+      method: component        # component | se3
+      reference:
+        source: state          # state 当前实测；action 当前指令
+        scope: chunk           # chunk 全部相对同一参考；step 首个相对 source，后续相对前一个目标
+      # 服务端还原绝对目标后发送；客户端不再叠加 delta。
+  timing:
+    sample_hz: 30.0          # 采样频率；低维量插值、图像取近邻
+    history_steps: 1         # 输入历史帧数；状态拼接、图像横向拼图，起点前重复首帧
+    action_horizon: 50       # 每次预测H帧，执行长度在客户端infer.execution_steps中设置
+    target_offset_steps: 0   # 首目标偏移；0从当前时刻开始，1从下一采样时刻开始
+    stride_steps: 1          # 目标间隔，以1/sample_hz秒为单位
+    # 第i帧目标=t+(target_offset_steps+i*stride_steps)/sample_hz，i从0开始。
+    # 默认右臂rot6d有效chunk=(50,10)，补到(50,32)；episode末尾不足时重复最后目标。

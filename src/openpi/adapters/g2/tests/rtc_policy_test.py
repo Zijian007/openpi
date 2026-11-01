@@ -248,8 +248,6 @@ def test_joint_state_with_independent_pose_reference_round_trips_rtc(tmp_path, m
         ("joint_position", "absolute", None),
         ("joint_position", "component_delta", "chunk"),
         ("joint_position", "component_delta", "step"),
-        ("joint_velocity", "absolute", None),
-        ("joint_torque", "absolute", None),
     ],
 )
 def test_rtc_other_control_quantities_keep_wire_units(tmp_path, monkeypatch, arm, quantity, representation, scope):
