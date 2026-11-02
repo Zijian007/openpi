@@ -5,7 +5,7 @@ import time
 
 from g2_policy_protocol import protocol
 from g2_policy_protocol.data.policy import policy_capabilities
-from g2_policy_protocol.images import decode_images
+from g2_policy_protocol.images import decode_image_history, decode_images
 from g2_policy_protocol.images import encode_jpeg
 from g2_policy_protocol.server import PolicyServer
 import numpy as np
@@ -94,9 +94,11 @@ class OpenPIBackend:
             obs.update(rtc_enabled=True, inference_delay=request["inference_delay"])
             if request["prev_chunk_left_over"] is not None:
                 obs["prev_chunk_left_over"] = request["prev_chunk_left_over"]
-        # Image histories are raw RGB already validated by the protocol; they include the current frame.
+        # Histories include the current frame, so the separate current images are unused.
         decode_start = time.monotonic()
-        images = request["context"].get("image_history") or decode_images(request["images"], self.metadata)
+        history = request["context"].get("image_history")
+        images = (decode_images(request["images"], self.metadata) if history is None
+                  else decode_image_history(history, self.metadata))
         decode_ms = (time.monotonic() - decode_start) * 1000
         obs.update({CAMERA_OBSERVATION_KEYS[camera]: image for camera, image in images.items()})
         infer_start = time.monotonic()
