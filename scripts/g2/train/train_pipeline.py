@@ -58,7 +58,7 @@ def _resolve_experiment_name(settings: dict, config_path: Path) -> str:
         "arm": settings["experiment"]["arm"],
         "state": _space_name(settings["policy"], "state"),
         "action": _space_name(settings["policy"], "action"),
-        "date": dt.datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%d"),
+        "date": dt.datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%d_%H%M"),
         "version": "v01",
     }
     try:
@@ -69,7 +69,7 @@ def _resolve_experiment_name(settings: dict, config_path: Path) -> str:
     except ValueError as error:
         raise ValueError(f"Invalid experiment.name template: {error}") from error
     if any(field == "version" for _, field, _, _ in tokens):
-        # Match only runs from this template and date.
+        # Match only runs from this template and start minute.
         pattern = "".join(
             re.escape(literal)
             + (r"v(\d+)" if field == "version" else re.escape(values[field]) if field is not None else "")

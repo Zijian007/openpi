@@ -103,14 +103,14 @@ experiment:
   arm: right
 ```
 
-例如 `chapai_layer3_right_spose_abs_apose_dcomp_20261031_v01`。
+例如 `chapai_layer3_right_spose_abs_apose_dcomp_20261031_1430_v01`。
 占位符为 `{task}`（不带扩展名的配置文件名，小写）、`{arm}`、`{state}`、`{action}`、
-`{date}`（Asia/Taipei 的启动日期，YYYYMMDD）、`{version}`（v01 起）。
+`{date}`（Asia/Taipei 的启动时间，YYYYMMDD_HHMM）、`{version}`（v01 起）。
 位姿/关节分别用 `pose/joint`；绝对值用 `abs`，分量差用 `dcomp`，SE(3) 差用 `dse3`，
 同时启用多个状态分支时拼接它们的名称。
 名称只概括状态和动作表示，坐标、参考、旋转编码和时序等完整语义仍保存在 YAML 快照中。
 
-版本号按同一实验根目录、同一模板和日期下已有名称的最大版本递增，模型微调模式变化也不会覆盖同名实验。
+版本号按同一实验根目录、同一模板和启动分钟下已有名称的最大版本递增，模型微调模式变化也不会覆盖同名实验。
 `--dry-run` 仅预览，不创建或预留目录；并发启动同一模板时应通过 `--exp-name` 指定不同名称。
 生成后的完整名称会写入 checkpoint 快照和训练日志；续训须使用完整名称，避免日期或版本变化：
 
@@ -119,7 +119,7 @@ bash scripts/g2/train/train_pipeline.sh --config scripts/g2/configs/G2_ChaPai.ya
   --exp-name 'chapai_layer3_{arm}_{state}_{action}_{date}_{version}' --dry-run
 # 续训示例：名称替换为实际生成的名称
 bash scripts/g2/train/train_pipeline.sh --config scripts/g2/configs/G2_ChaPai.yaml \
-  --resume --exp-name chapai_layer3_right_spose_abs_apose_dcomp_20261031_v01
+  --resume --exp-name chapai_layer3_right_spose_abs_apose_dcomp_20261031_1430_v01
 ```
 
 手写的固定名称保持原样。短跑仍使用独立的时间戳名称，CLI 的 `--exp-name` 可覆盖。

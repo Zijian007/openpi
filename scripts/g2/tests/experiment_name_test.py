@@ -1,9 +1,11 @@
 """Automatic experiment names must identify the resolved policy and preserve resume identity."""
 
 import copy
+import datetime as dt
 from pathlib import Path
 import sys
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -22,7 +24,7 @@ def experiment(tmp_path):
     config = tmp_path / "ChaPai_layer3.yaml"
     config.write_text("experiment:\n  name: auto\n")
     with patch("train_pipeline.dt") as clock:
-        clock.datetime.now.return_value.strftime.return_value = "20261031"
+        clock.datetime.now.return_value = dt.datetime(2026, 10, 31, 14, 30, tzinfo=ZoneInfo("Asia/Taipei"))
         yield config, tmp_path / "checkpoints"
 
 
@@ -36,7 +38,7 @@ def resolve(config, root, *flags):
 def test_auto_name_uses_config_stem_and_resolved_arm(experiment):
     config, root = experiment
     settings = resolve(config, root, "--arm", "left")
-    assert settings["experiment"]["name"] == "chapai_layer3_left_spose_abs_apose_dcomp_20261031_v01"
+    assert settings["experiment"]["name"] == "chapai_layer3_left_spose_abs_apose_dcomp_20261031_1430_v01"
     assert not root.exists()
 
 
@@ -44,10 +46,12 @@ def test_template_versions_skip_existing_runs_and_preview_does_not_reserve(exper
     config, root = experiment
     template = "chapai_{arm}_{state}_{action}_{date}_{version}"
     for version in (1, 3):
-        (root / f"chapai_right_spose_abs_apose_dcomp_20261031_v{version:02d}").mkdir(parents=True)
-    (root / "chapai_right_spose_abs_apose_dcomp_20261030_v99").mkdir()
+        (root / f"chapai_right_spose_abs_apose_dcomp_20261031_1430_v{version:02d}").mkdir(parents=True)
+    (root / "chapai_right_spose_abs_apose_dcomp_20261030_1429_v99").mkdir()
+    (root / "chapai_right_spose_abs_apose_dcomp_20261031_1429_v99").mkdir()
+    (root / "chapai_right_spose_abs_apose_dcomp_20261031_v99").mkdir()
     second = resolve(config, root, "--exp-name", template)
-    assert second["experiment"]["name"] == "chapai_right_spose_abs_apose_dcomp_20261031_v04"
+    assert second["experiment"]["name"] == "chapai_right_spose_abs_apose_dcomp_20261031_1430_v04"
     assert resolve(config, root, "--exp-name", template)["experiment"] == second["experiment"]
     assert not (root / second["experiment"]["name"]).exists()
 
@@ -59,6 +63,8 @@ def test_resume_requires_concrete_name_but_cli_override_is_supported(experiment)
     settings = resolve(config, root)
     name = settings["experiment"]["name"]
     assert resolve(config, root, "--resume", "--exp-name", name)["experiment"]["name"] == name
+    old_name = "chapai_right_spose_abs_apose_dcomp_20261031_v04"
+    assert resolve(config, root, "--resume", "--exp-name", old_name)["experiment"]["name"] == old_name
 
 
 @pytest.mark.parametrize("name", ["{unknown}", "{arm.__class__}", "{date:8}", "{arm!r}", "run_{", "run_}"])
@@ -88,7 +94,7 @@ def test_dry_run_prints_concrete_name_without_writing_or_training(experiment, ca
     with patch("train_pipeline._check_dataset") as check, patch("train_pipeline._run_command") as run:
         main(["--config", str(config), "--checkpoint-base-dir", str(root), "--dry-run"])
     output = capsys.readouterr().out
-    assert "name: chapai_layer3_right_spose_abs_apose_dcomp_20261031_v01" in output
+    assert "name: chapai_layer3_right_spose_abs_apose_dcomp_20261031_1430_v01" in output
     assert "name: auto" not in output
     assert not root.exists()
     check.assert_not_called()
