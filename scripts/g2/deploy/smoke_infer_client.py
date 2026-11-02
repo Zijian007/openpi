@@ -26,7 +26,7 @@ import urllib.request
 
 from g2_policy_protocol import codec
 from g2_policy_protocol import protocol
-from g2_policy_protocol.samples import synthetic_context
+from g2_policy_protocol.diagnostics.samples import synthetic_context
 import numpy as np
 import tyro
 from websockets.sync.client import connect

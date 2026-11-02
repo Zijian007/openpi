@@ -1,6 +1,5 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from g2_policy_protocol import codec
 from g2_policy_protocol import protocol
@@ -43,16 +42,16 @@ def test_configured_camera_subset_and_state_source_reach_policy(requires_joint_s
             )
             return codec.dumps(payload, encoding=codec.encoding_from_path("/"))
 
-    with patch("openpi.adapters.g2.server.cv2", None):
-        server = G2PolicyServer(
-            Policy(),
-            metadata={
-                "arm": arm,
-                "required_cameras": ["head_color"],
-                "requires_joint_state": requires_joint_state,
-                "execution_steps": 10,
-            },
-        )
+    server = G2PolicyServer(
+        Policy(),
+        image_encoding="raw",
+        metadata={
+            "arm": arm,
+            "required_cameras": ["head_color"],
+            "requires_joint_state": requires_joint_state,
+            "execution_steps": 10,
+        },
+    )
     websocket = Websocket()
     asyncio.run(server._handler(websocket))  # noqa: SLF001
     metadata, response = websocket.sent
@@ -116,11 +115,11 @@ def test_non_pose_wire_uses_shared_contract_and_rejects_private_dialect(accepted
                 message["protocol"] = "g2.openpi.v1"
             return codec.dumps(message)
 
-    with patch("openpi.adapters.g2.server.cv2", None):
-        server = G2PolicyServer(
-            Policy(),
-            metadata={"policy_contract": settings, "requires_joint_state": True, "required_cameras": ["head_color"], "action_horizon": 3},
-        )
+    server = G2PolicyServer(
+        Policy(),
+        image_encoding="raw",
+        metadata={"policy_contract": settings, "requires_joint_state": True, "required_cameras": ["head_color"], "action_horizon": 3},
+    )
     ws = Websocket()
     asyncio.run(server._handler(ws))  # noqa: SLF001
     meta, response = ws.sent

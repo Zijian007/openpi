@@ -4,8 +4,8 @@ import copy
 from unittest.mock import patch
 
 from g2_policy_protocol.data.encoding import ActionCodec
-from g2_policy_protocol.data.encoding import matrix_pose
-from g2_policy_protocol.data.encoding import pose_matrix
+from g2_policy_protocol.data.geometry import matrix_to_pose
+from g2_policy_protocol.data.geometry import pose_to_matrix
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -19,7 +19,7 @@ from openpi.adapters.g2.transforms import G2Inputs
 
 def resolve(tmp_path, policy):
     path = tmp_path / "pose.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": 8, "policy": policy}))
+    path.write_text(yaml.safe_dump({"policy": policy}))
     return g2_config.resolve_settings(g2_config.load_settings(path), {})
 
 
@@ -40,7 +40,7 @@ def coordinates(index, rotation):
 
 
 def pair(index):
-    return np.concatenate([matrix_pose(transform(index), 0.2), matrix_pose(transform(index + 1), 0.7)])
+    return np.concatenate([matrix_to_pose(transform(index), 0.2), matrix_to_pose(transform(index + 1), 0.7)])
 
 
 @pytest.mark.parametrize("method", ["component", "se3"])
@@ -85,27 +85,27 @@ def test_independent_coordinates_match_manual_geometry_and_decode_canonical_targ
 
     state_parent = obs["observation/base_to_parent"]
     state_tool = np.asarray(state_pose["flange_to_tcp"]["right"])
-    state_ref = state_parent @ pose_matrix(history[-1, 10:]) @ state_tool
+    state_ref = state_parent @ pose_to_matrix(history[-1, 10:]) @ state_tool
     expected_state = []
     for frame in history:
-        state_target = state_parent @ pose_matrix(frame[10:]) @ state_tool
+        state_target = state_parent @ pose_to_matrix(frame[10:]) @ state_tool
         if state_relative:
             state_target = np.linalg.inv(state_ref) @ state_target
-        expected_state.append(matrix_pose(state_target, frame[-1], state_rotation))
+        expected_state.append(matrix_to_pose(state_target, frame[-1], state_rotation))
     np.testing.assert_allclose(encoded["state"], np.concatenate(expected_state), atol=2e-6)
     assert len(encoded["state"]) == g2_config.state_dimension(settings)
 
     action_parent = np.eye(4)
     action_tool = np.asarray(action_pose["flange_to_tcp"]["right"])
-    ref = action_parent @ pose_matrix(history[-1, 10:]) @ action_tool
+    ref = action_parent @ pose_to_matrix(history[-1, 10:]) @ action_tool
     expected_actions = []
     for frame in targets:
-        target = action_parent @ pose_matrix(frame[10:]) @ action_tool
+        target = action_parent @ pose_to_matrix(frame[10:]) @ action_tool
         if method == "component":
-            value = matrix_pose(target, frame[-1], action_rotation)
-            value[:-1] -= matrix_pose(ref, 0, action_rotation)[:-1]
+            value = matrix_to_pose(target, frame[-1], action_rotation)
+            value[:-1] -= matrix_to_pose(ref, 0, action_rotation)[:-1]
         else:
-            value = matrix_pose(np.linalg.inv(ref) @ target, frame[-1], action_rotation)
+            value = matrix_to_pose(np.linalg.inv(ref) @ target, frame[-1], action_rotation)
         expected_actions.append(value)
         if scope == "step":
             ref = target
@@ -185,7 +185,7 @@ def test_dynamic_parent_in_either_group_is_advertised_and_used(tmp_path, group):
     for key in ("observation/state", "observation/pose", "actions"):
         value = canonical[key]
         canonical[key] = np.concatenate([
-            matrix_pose(transform(0.3) @ pose_matrix(value[..., offset:offset + 10]), value[..., offset + 9])
+            matrix_to_pose(transform(0.3) @ pose_to_matrix(value[..., offset:offset + 10]), value[..., offset + 9])
             for offset in (0, 10)
         ], axis=-1)
     expected = G2Inputs(policy=static["policy"], arm="right", cameras=())(canonical)

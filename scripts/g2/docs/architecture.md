@@ -6,8 +6,8 @@ OpenPI 与 lerobot-finetune 环境、cache、W&B 和 checkpoint 都不互通。�
 
 ## 通信
 
-G2 使用 `g2-policy-protocol==0.7.0` 的 `g2.policy.v3`。控制量、观测、时间和 reset 都通过能力声明；见 [Policy 配置](policy.md#快照和部署)。
-协议通过 G2 extra 安装，源码、wheel、更新与验证统一见[协议安装教程](../../../../g2-policy-protocol/docs/guide.md#安装与版本)；OpenPI 的 GPU 与视频环境见[环境安装](environment.md)。训练直接使用 `.venv/bin/python`，服务通过 `uv run --no-sync --extra g2` 使用项目环境，启动时不修改依赖。
+G2 使用相邻 `g2-policy-protocol` 的 `g2.policy.v3`。控制量、观测、时间和 reset 都通过能力声明；见 [Policy 配置](policy.md#快照和部署)。
+协议通过 G2 extra 安装，源码、wheel、更新与验证统一见[协议安装教程](../../../../g2-policy-protocol/docs/install.md)；OpenPI 的 GPU 与视频环境见[环境安装](environment.md)。训练直接使用 `.venv/bin/python`，服务通过 `uv run --no-sync --extra g2` 使用项目环境，启动时不修改依赖。
 
 G2 入口是 `G2PolicyServer`。服务端把标准观测映射成模型内部的 `observation/*`；JPEG 解码、RTC、单臂扩展和图像处理留在适配层。默认 MessagePack，client 连接 `?encoding=json` 时整段会话用 JSON。域控和 GPU 需同版本并重启。
 
@@ -16,7 +16,7 @@ G2 入口是 `G2PolicyServer`。服务端把标准观测映射成模型内部的
 G2 逻辑在 `openpi.adapters.g2`，启动入口在 `scripts/g2/`，依赖方向为 G2 → 原生 OpenPI：
 
 - `g2_policy_protocol.data.policy`：解析 `policy.state/action/timing`，校验语义并推导服务能力。
-- `g2_policy_protocol.data.encoding` / `dataset`：共享状态/动作编码、时序采样及数据契约检查。
+- `g2_policy_protocol.data.encoding` / `geometry` / `dataset`：共享状态/动作编码、位姿几何、时序采样及数据契约检查。
 - `config.py`：YAML 读取、原生配置校验与训练配置构建；预览时不加载模型。
 - `training_config.py`：本仓库训练 YAML 的版本、入口字段检查、原生字段映射和 checkpoint 快照；不依赖协议包或模型框架。
 - `presets.py`：Pi05 模型模板与模块冻结规则；导入时不读当前 YAML。
@@ -32,4 +32,4 @@ G2 逻辑在 `openpi.adapters.g2`，启动入口在 `scripts/g2/`，依赖方向
 
 ## 磁盘与部署契约
 
-两套训练入口共用磁盘契约和能力推导。服务返回完整 H 帧，执行预算留在客户端；历史与参考由显式上下文提供。详见[架构与数据链路](../../../../g2-policy-protocol/docs/development.md#职责划分)；跨框架联调命令见[跨仓库验证](../../../../g2-policy-protocol/docs/development.md#跨仓库验证)。
+两套训练入口共用磁盘契约和能力推导。服务返回完整 H 帧，执行预算留在客户端；历史与参考由显式上下文提供。详见[架构与数据链路](../../../../g2-policy-protocol/README.md#职责划分)；跨框架联调命令见[跨仓库验证](../../../../g2-policy-protocol/README.md#跨仓库验证)。

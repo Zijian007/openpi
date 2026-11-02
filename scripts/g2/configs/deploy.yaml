@@ -4,6 +4,7 @@ checkpoint: /home/zijianwang/openpi/runs/Chapai_layer3_right/checkpoints/80000
 server:
   host: 0.0.0.0
   port: 8001
+  image_encoding: jpeg     # jpeg | raw: how the domain controller sends camera images
   warmup: true
   record: false
   rtc: true

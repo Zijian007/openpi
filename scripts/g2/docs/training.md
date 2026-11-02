@@ -45,7 +45,7 @@ OpenPI 读 **LeRobot v2.1**。目录是 `data.root / data.repo_id`，不是写�
 rsync -avP .../recorded/vr/lerobot_v21/ ~/openpi/data/<data.repo_id>/
 ```
 
-`HF_LEROBOT_HOME` 默认等于 YAML 的 `data.root`（见 `scripts/g2/_env.sh`）。导出列和段边界见[公共契约](../../../../g2-policy-protocol/docs/development.md#职责划分)。
+`HF_LEROBOT_HOME` 默认等于 YAML 的 `data.root`（见 `scripts/g2/_env.sh`）。导出列和段边界见[公共契约](../../../../g2-policy-protocol/README.md#职责划分)。
 
 ## 改配置
 
@@ -64,10 +64,10 @@ bash scripts/g2/train/train_pipeline.sh scripts/g2/configs/multi_dataset.yaml --
 
 多源统计量写入 `.cache/g2/norm/<签名>/mix-<指纹>`，按展开分布计算，norm 阶段不解码视频。checkpoint 保存 asset_id，部署无需原始数据。续训校验混合身份，复用 checkpoint 统计量，但不保证数据顺序接续。
 
-需安装 `g2-policy-protocol==0.7.0` 并同步升级训练和部署代码。旧单源 checkpoint 的 asset_id 仍为原 repo_id。完整规则见[多数据集与图像尺寸](../../../../g2-policy-protocol/docs/policy-config.md#多数据集与图像尺寸)。
+训练和部署代码与协议包一起更新。旧单源 checkpoint 的 asset_id 仍为原 repo_id。完整规则见[多数据集与图像尺寸](../../../../g2-policy-protocol/docs/policy-config.md#多数据集与图像尺寸)。
 
 先改这几项就能跑：`experiment.name`、`experiment.arm`、`data.root`、`data.repo_id`、`runtime.gpus`。
-`policy` 默认已是 TeaPi：右臂实测绝对位姿，学习指令相对当前实测的分量差。改作差/坐标/历史见字段速查；自定义 YAML 只写要覆盖的叶子，其余继承 `configs/train.yaml`。本仓库的训练入口使用 `schema_version: 8`、`backend: openpi`；版本、字段翻译与 checkpoint 快照由 `openpi.adapters.g2.training_config` 维护。配置版本独立于线上 `g2.policy.v3`；共享包只约束 `policy` 的状态、动作和时序语义。
+`policy` 默认已是 TeaPi：右臂实测绝对位姿，学习指令相对当前实测的分量差。改作差/坐标/历史见字段速查；自定义 YAML 只写要覆盖的叶子，其余继承 `configs/train.yaml`。字段翻译与 checkpoint 快照由 `openpi.adapters.g2.training_config` 维护。训练 YAML 没有格式版本号：未知字段一律拒绝；字段含义改变时换字段名。共享包只约束 `policy` 的状态、动作和时序语义。
 
 | 字段 | 含义 |
 |---|---|
@@ -200,7 +200,7 @@ finetuning:
 
 ## YAML 归属与 checkpoint
 
-v8 按职责组织字段：
+训练 YAML 按职责组织字段：
 
 | 分组 | 内容 |
 | --- | --- |
@@ -214,7 +214,6 @@ v8 按职责组织字段：
 | `logging` | 指标打印间隔和 `wandb` |
 
 `model.type` 当前仅接受 `pi05`，`model.pretrained_path` 映射到参数加载路径。
-`backend: openpi` 表示本仓库训练入口，当前 G2 训练使用 JAX。
 `resolved.mixture` 是混合数据规划器生成的快照元数据，实验 YAML 不需要手填。
 冻结和全参模块可省略 `lora`；缺省选项在默认值继承后补全，保存快照时包含完整参数。
 
@@ -228,9 +227,9 @@ CLI `--steps`、`--batch-size`、`--num-workers`、`--log-interval`、`--save-in
 
 `train.yaml` 是默认模板，默认 GPU 为 0、实验名为 `g2_experiment`、关闭续训、自动复用统计量。
 升级前的 Sing_TeaPi 实验参数保留在 `configs/Sing_TeaPi.yaml`；ChaPai 使用 `configs/G2_ChaPai.yaml`。
-默认模板和实验 YAML 先各自翻译为内部配置，再合并显式覆盖；配置统一使用 v8。
+默认模板和实验 YAML 先各自翻译为内部配置，再合并显式覆盖。
 
-新 checkpoint 的 `g2_train_config.yaml` 保存自包含 v8 配置；恢复时不合并当前训练模板。
-训练、续训和部署均要求 v8 配置，不再兼容 v7。配置布局变化不修改权重、统计量或优化器状态。
+新 checkpoint 的 `g2_train_config.yaml` 保存自包含配置；恢复时不合并当前训练模板。
+早先的快照带有 `schema_version: 8`、`backend: openpi` 两个字段，读取时忽略；其他取值（如旧的 7）会被拒绝。
 
-同名参数不保证与其他框架训练等价，尤其 LeRobot 的 batch_size 是每进程 batch。
+LeRobot 的 G2 训练 YAML 与本仓库段落对齐（batch_size 同为全局 batch）；两个框架的优化器与模型实现不同，同名参数不代表数值等价。

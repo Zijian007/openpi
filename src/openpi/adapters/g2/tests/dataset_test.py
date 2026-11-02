@@ -2,7 +2,7 @@ import copy
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from g2_policy_protocol.data.encoding import matrix_pose
+from g2_policy_protocol.data.geometry import matrix_to_pose
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -22,7 +22,7 @@ class RecordedDataset:
                 t = np.eye(4)
                 t[0, 3] = episode * 100 + frame
                 t[:3, :3] = Rotation.from_rotvec([0, 0, frame * 0.2]).as_matrix()
-                pose = np.tile(matrix_pose(t, 0.4), 2)
+                pose = np.tile(matrix_to_pose(t, 0.4), 2)
                 self.hf_dataset.append(
                     {
                         "state.pose": pose,

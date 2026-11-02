@@ -4,7 +4,7 @@ import copy
 from types import SimpleNamespace
 
 from g2_policy_protocol.data.encoding import ActionCodec
-from g2_policy_protocol.data.encoding import matrix_pose
+from g2_policy_protocol.data.geometry import matrix_to_pose
 import numpy as np
 import pytest
 import yaml
@@ -19,14 +19,14 @@ from openpi.adapters.g2.transforms import G2Inputs
 
 def resolve(tmp_path, policy):
     path = tmp_path / "branches.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": 8, "policy": policy}))
+    path.write_text(yaml.safe_dump({"policy": policy}))
     return config.resolve_settings(config.load_settings(path), {})
 
 
 def test_default_tree_and_self_contained_snapshot():
     resolved = config.resolve_settings(config.load_settings(), {})
     public = config.public_settings(resolved)
-    assert public["schema_version"] == 8
+    assert "schema_version" not in public
     assert public["policy"].keys() == {"state", "action", "timing"}
     for group in ("state", "action"):
         assert public["policy"][group].keys() == {"joint", "pose"}
@@ -43,11 +43,11 @@ def test_default_tree_and_self_contained_snapshot():
     assert preview["label_column"] == "action.pose"
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, True, "8"])
-def test_other_schemas_are_rejected(tmp_path, version):
+@pytest.mark.parametrize("version", [1, 7, True, "8"])
+def test_old_layout_configs_are_rejected(tmp_path, version):
     path = tmp_path / "version.yaml"
     path.write_text(yaml.safe_dump({"schema_version": version}))
-    with pytest.raises(ValueError, match="schema_version: 8"):
+    with pytest.raises(ValueError, match="Unsupported legacy config"):
         config.load_settings(path)
 
 
@@ -115,7 +115,7 @@ def test_combined_state_encodes_each_branch_independently(tmp_path, arm, pose_re
         },
     )
     settings = config.resolve_settings(settings, {"arm": arm})
-    pose = np.tile(matrix_pose(np.eye(4), 0.6), 2)
+    pose = np.tile(matrix_to_pose(np.eye(4), 0.6), 2)
     history = np.stack([pose.copy(), pose.copy()])
     history[0, [0, 10]] = 0.2
     history[1, [0, 10]] = 0.5
@@ -176,7 +176,7 @@ def test_branch_quantity_and_source_select_lerobot_labels(tmp_path, kind, quanti
         row = {}
         for prefix in ("state", "action"):
             value = i + (10 if prefix == "action" else 0)
-            pose = np.tile(matrix_pose(np.eye(4), 0.4), 2)
+            pose = np.tile(matrix_to_pose(np.eye(4), 0.4), 2)
             pose[[0, 10]] = value
             row[f"{prefix}.pose"] = pose
             row[f"{prefix}.joint"] = np.full(16, value, np.float32)

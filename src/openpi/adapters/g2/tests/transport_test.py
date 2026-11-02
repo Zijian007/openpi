@@ -12,32 +12,28 @@ from websockets.sync.client import connect
 from openpi.adapters.g2 import server as server_adapter
 from openpi.adapters.g2.server import G2PolicyServer
 from openpi.adapters.g2.server import _warmup_jpeg_transport
+from g2_policy_protocol.images import decode_images
 
 
-def test_jpeg_warmup_decodes_three_images_twice_without_policy():
-    from openpi.adapters.g2.server import _decode_jpeg_images
-
+def test_jpeg_warmup_decodes_required_cameras_twice_without_policy():
+    meta = protocol.build_metadata(policy_hz=30, image_encoding="jpeg")
     decoded = []
 
-    def decode(obs):
-        assert len(obs) == 3
-        assert all(isinstance(image, bytes) for image in obs.values())
-        _decode_jpeg_images(obs)
-        decoded.append(obs)
+    def decode(images, metadata):
+        assert set(images) == set(meta["required_cameras"])
+        assert all(isinstance(image, bytes) for image in images.values())
+        decoded.append(decode_images(images, metadata))
 
-    with patch("openpi.adapters.g2.server._decode_jpeg_images", side_effect=decode):
-        _warmup_jpeg_transport()
+    with patch("openpi.adapters.g2.server.decode_images", side_effect=decode):
+        _warmup_jpeg_transport(meta)
     assert len(decoded) == 2
-    for obs in decoded:
-        assert all(image.shape == (224, 224, 3) and image.dtype == np.uint8 for image in obs.values())
+    for images in decoded:
+        assert all(image.shape == (224, 224, 3) and image.dtype == np.uint8 for image in images.values())
 
 
-def test_jpeg_warmup_skips_without_opencv():
-    with (
-        patch("openpi.adapters.g2.server.cv2", None),
-        patch("openpi.adapters.g2.server._decode_jpeg_images") as decode,
-    ):
-        _warmup_jpeg_transport()
+def test_jpeg_warmup_skips_raw_transport():
+    with patch("openpi.adapters.g2.server.decode_images") as decode:
+        _warmup_jpeg_transport(protocol.build_metadata(policy_hz=30, image_encoding="raw"))
     decode.assert_not_called()
 
 
@@ -60,19 +56,18 @@ def test_transport_warmup_finishes_before_binding_port():
         return Listener()
 
     with (
-        patch("openpi.adapters.g2.server._warmup_jpeg_transport", side_effect=lambda: events.append("warmup")),
+        patch("openpi.adapters.g2.server._warmup_jpeg_transport", side_effect=lambda _: events.append("warmup")),
         patch("g2_policy_protocol.server.serve", side_effect=bind),
     ):
         asyncio.run(G2PolicyServer(None).run())
     assert events == ["warmup", "bind", "listen", "serve"]
 
 
-def test_transport_owns_encoding_capability():
+def test_deployment_selects_image_encoding():
     metadata = {"robot": "g2", "image_encoding": "stale"}
     assert server_adapter.connection_metadata(metadata)["image_encoding"] == "jpeg"
     assert metadata["image_encoding"] == "stale"
-    with patch("openpi.adapters.g2.server.cv2", None):
-        assert server_adapter.connection_metadata(None)["image_encoding"] == "raw"
+    assert server_adapter.connection_metadata(None, "raw")["image_encoding"] == "raw"
 
 
 @pytest.mark.parametrize("encoding", ["msgpack", "json"])
@@ -95,8 +90,7 @@ def test_real_server_decodes_negotiated_images(encoding, image_encoding):
             seen.append(obs)
             return {"actions": np.zeros((2, 20), dtype=np.float32)}
 
-    with patch("openpi.adapters.g2.server.cv2", cv2 if image_encoding == "jpeg" else None):
-        server = G2PolicyServer(Policy())
+    server = G2PolicyServer(Policy(), image_encoding=image_encoding)
 
     def client(port):
         with connect(f"ws://127.0.0.1:{port}/?encoding={encoding}", compression=None, open_timeout=3) as ws:
@@ -133,16 +127,9 @@ def test_real_server_decodes_negotiated_images(encoding, image_encoding):
     assert len(seen) == 2
 
 
-def test_corrupt_jpeg_is_rejected():
-    from openpi.adapters.g2.server import _decode_jpeg_images
-
-    with pytest.raises(ValueError, match="failed to decode"):
-        _decode_jpeg_images({"observation/image": b"not a jpeg"})
-
-
 @pytest.mark.parametrize("encoding", ["msgpack", "json"])
 def test_arm_base_server_uses_each_requests_frame_for_state_and_action(encoding):
-    from g2_policy_protocol.data.encoding import matrix_pose
+    from g2_policy_protocol.data.geometry import matrix_to_pose
     from g2_policy_protocol.data.policy import resolve_policy
     from scipy.spatial.transform import Rotation
 
@@ -166,7 +153,7 @@ def test_arm_base_server_uses_each_requests_frame_for_state_and_action(encoding)
             self.metadata = {"arm": "right"}
 
         def infer(self, observation):
-            np.testing.assert_allclose(inputs(observation)["state"], np.tile(matrix_pose(local, 0.5), 2), atol=1e-6)
+            np.testing.assert_allclose(inputs(observation)["state"], np.tile(matrix_to_pose(local, 0.5), 2), atol=1e-6)
             actions = np.zeros((3, 10), np.float32)
             actions[:, 0] = 0.05
             actions[:, -1] = 0.7
@@ -184,7 +171,7 @@ def test_arm_base_server_uses_each_requests_frame_for_state_and_action(encoding)
                 base = np.eye(4)
                 base[:3, :3] = Rotation.from_rotvec([0.2, -0.3, 0.5 * request_id]).as_matrix()
                 base[:3, 3] = [0.3 * request_id, 0, 0.8]
-                pose = np.tile(matrix_pose(base @ local, 0.5), 2)
+                pose = np.tile(matrix_to_pose(base @ local, 0.5), 2)
                 request = protocol.build_request(
                     request_id=request_id, prompt="tea", state=pose, images={}, metadata=metadata,
                     observation_time_ns=1_000_000_000 + request_id * 100_000_000,
@@ -227,11 +214,11 @@ def test_real_advanced_server_transports_history_and_typed_joint_actions(encodin
             seen.append(obs)
             return {"actions": np.ones((3, 16), np.float32)}
 
-    with patch("openpi.adapters.g2.server.cv2", None):
-        server = G2PolicyServer(
-            Policy(),
-            metadata={"requires_joint_state": True, "required_cameras": ["head_color"], "policy_contract": settings, "action_horizon": 3},
-        )
+    server = G2PolicyServer(
+        Policy(),
+        image_encoding="raw",
+        metadata={"requires_joint_state": True, "required_cameras": ["head_color"], "policy_contract": settings, "action_horizon": 3},
+    )
 
     def client(port):
         with connect(

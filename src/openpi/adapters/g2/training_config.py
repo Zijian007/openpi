@@ -1,8 +1,13 @@
-"""Versioned G2 training YAML and snapshots; no model/framework imports."""
+"""G2 training YAML and checkpoint snapshots; no model/framework imports.
+
+There is no format version: unknown fields are rejected, and a field whose
+meaning changes gets a new name.
+"""
 
 import copy
 
-VERSION = 8
+# Files written before the version fields were dropped still carry exactly these values.
+LEGACY_FIELDS = {"schema_version": 8, "backend": "openpi"}
 LORA_DEFAULTS = {
     "vision": {"rank": 16, "alpha": 16.0, "targets": ["attention"], "rslora": False},
     "language": {"rank": 16, "alpha": 16.0, "targets": ["attention", "ffn"], "rslora": False},
@@ -11,8 +16,6 @@ LORA_DEFAULTS = {
 FINETUNING_FIELDS = {module: {"mode": None, "lora": {"rank", "alpha", "targets", "rslora"}} for module in LORA_DEFAULTS}
 
 SOURCE_FIELDS = {
-    "schema_version": None,
-    "backend": None,
     "experiment": None,
     "runtime": {"gpus", "fsdp_devices", "mem_fraction"},
     "model": {"type", "pretrained_path", "discrete_state_input"},
@@ -83,19 +86,23 @@ def _put(tree, path, value):
     tree[path[-1]] = copy.deepcopy(value)
 
 
+def without_legacy_fields(source):
+    """Drop the old schema_version/backend fields; any other value is an unsupported config."""
+    for key, expected in LEGACY_FIELDS.items():
+        if key in source and source[key] != expected:
+            raise ValueError(f"Unsupported legacy config ({key}: {source[key]!r}); use the current OpenPI G2 layout")
+    return {key: value for key, value in source.items() if key not in LEGACY_FIELDS}
+
+
 def to_native(source):
-    """Translate explicit v8 fields, without inserting inherited defaults."""
+    """Translate explicit public fields, without inserting inherited defaults."""
     if not isinstance(source, dict):
         raise TypeError("settings must be a YAML mapping")
-    version = source.get("schema_version")
-    if type(version) is not int or version != VERSION:
-        raise ValueError("openpi training requires schema_version: 8")
+    source = without_legacy_fields(source)
     _validate_fields(source, SOURCE_FIELDS, "settings")
-    if source.get("backend") != "openpi":
-        raise ValueError("backend must be openpi for this training entry point")
     if source.get("model", {}).get("type", "pi05") != "pi05":
         raise ValueError("The OpenPI G2 training entry point supports model.type: pi05")
-    result = {"schema_version": VERSION}
+    result = {}
     for public, native in V8_PATHS.items():
         value = _get(source, public)
         if value is not _MISSING:
@@ -104,10 +111,7 @@ def to_native(source):
 
 
 def experiment_to_native(source):
-    """Allow omitted version/backend in partial v8 overrides."""
-    source = copy.deepcopy(source)
-    source.setdefault("schema_version", VERSION)
-    source.setdefault("backend", "openpi")
+    """Partial experiment YAML: only the fields it overrides."""
     return to_native(source)
 
 
@@ -122,16 +126,14 @@ def complete_finetuning(settings):
 
 
 def openpi_snapshot(settings):
-    """Serialize complete native settings as a self-contained v8 snapshot."""
-    result = {"schema_version": VERSION, "backend": "openpi"}
+    """Serialize complete native settings as a self-contained public snapshot."""
+    result = {}
     for public, native in V8_PATHS.items():
         value = _get(settings, native)
         if value is not _MISSING:
             _put(result, public, value)
     result.setdefault("model", {})["type"] = "pi05"
     order = (
-        "schema_version",
-        "backend",
         "experiment",
         "runtime",
         "model",

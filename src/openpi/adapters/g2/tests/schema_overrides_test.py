@@ -7,16 +7,13 @@ from openpi.adapters.g2 import config
 from openpi.adapters.g2 import training_config as schema
 
 
-@pytest.mark.parametrize("explicit_version", [False, True])
-def test_overrides_take_precedence_over_defaults(tmp_path, explicit_version):
+def test_overrides_take_precedence_over_defaults(tmp_path):
     source = {
         "runtime": {"gpus": [1, 2], "fsdp_devices": 2, "mem_fraction": 0.7},
         "checkpoints": {"resume": True, "save_interval": 2000},
         "logging": {"log_interval": 20},
         "training": {"batch_size": 4, "lr_schedule": {"peak_lr": 1e-5, "warmup_steps": 200}},
     }
-    if explicit_version:
-        source["schema_version"] = 8
     path = tmp_path / "experiment.yaml"
     path.write_text(yaml.safe_dump(source))
     settings = config.resolve_settings(config.load_settings(path), {})
@@ -47,12 +44,12 @@ def test_overrides_take_precedence_over_defaults(tmp_path, explicit_version):
 )
 def test_v8_rejects_old_paths_and_nested_typos(section, override):
     with pytest.raises(ValueError, match="Unknown YAML field"):
-        schema.to_native({"schema_version": 8, "backend": "openpi", section: override})
+        schema.to_native({section: override})
 
 
 def test_omitted_inactive_lora_options_allow_later_cli_activation(tmp_path):
     path = tmp_path / "experiment.yaml"
-    path.write_text("schema_version: 8\nfinetuning:\n  action_expert:\n    mode: frozen\n")
+    path.write_text("finetuning:\n  action_expert:\n    mode: frozen\n")
     settings = config.resolve_settings(config.load_settings(path), {"action_expert_mode": "lora"})
     assert settings["finetuning"]["action_expert"]["lora"] == schema.LORA_DEFAULTS["action_expert"]
     config.validate_settings(settings)

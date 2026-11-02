@@ -134,7 +134,7 @@ def test_custom_yaml_merges_without_repeating_all_fields(tmp_path):
 
 def test_preview_reports_environment_gpu_selection_and_fsdp_grouping(tmp_path, capsys):
     path = tmp_path / "devices.yaml"
-    path.write_text("schema_version: 8\nruntime:\n  gpus: [3]\n  fsdp_devices: 2\n")
+    path.write_text("runtime:\n  gpus: [3]\n  fsdp_devices: 2\n")
     with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,2"}, clear=True):
         main(["--config", str(path), "--dry-run", "--no-resume"])
     output = capsys.readouterr().out
@@ -407,7 +407,7 @@ def test_worker_snapshot_uses_public_tree_for_both_stages(tmp_path):
     def run(command, **kwargs):
         path = Path(command[command.index("--resolved-config") + 1])
         payload = g2_config.read_yaml(path)
-        assert payload["settings"]["schema_version"] == 8
+        assert "schema_version" not in payload["settings"]
         assert payload["settings"]["policy"]["state"].keys() == {"joint", "pose"}
         assert payload["settings"]["policy"]["action"].keys() == {"joint", "pose"}
         captured.append(g2_config.normalize_settings(payload["settings"]))

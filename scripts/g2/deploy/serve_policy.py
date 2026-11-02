@@ -22,6 +22,7 @@ class Args:
     default_prompt: str | None = None
     host: str = "0.0.0.0"
     port: int = 8001
+    image_encoding: str = "jpeg"
     record: bool = False
     warmup: bool = True
     rtc: bool = True
@@ -115,7 +116,9 @@ def main(args: Args) -> None:
     _warmup(policy, args)
     if args.record:
         policy = policy_adapter.G2PolicyRecorder(policy, "policy_records")
-    G2PolicyServer(policy=policy, host=args.host, port=args.port, metadata=metadata).serve_forever()
+    G2PolicyServer(
+        policy=policy, host=args.host, port=args.port, metadata=metadata, image_encoding=args.image_encoding
+    ).serve_forever()
 
 
 def load_deploy_config(path: Path, *, apply_runtime: bool = False) -> Args:
@@ -127,7 +130,7 @@ def load_deploy_config(path: Path, *, apply_runtime: bool = False) -> Args:
     if set(raw) != allowed:
         raise ValueError(f"deployment config fields must be {sorted(allowed)}")
     server, runtime = raw["server"], raw["runtime"]
-    server_keys = {"host", "port", "warmup", "record", "rtc", "rtc_soft_overlap_steps", "rtc_guidance"}
+    server_keys = {"host", "port", "image_encoding", "warmup", "record", "rtc", "rtc_soft_overlap_steps", "rtc_guidance"}
     if not isinstance(server, dict) or set(server) != server_keys:
         raise ValueError(f"server config fields must be {sorted(server_keys)}")
     gpus = runtime.get("gpus") if isinstance(runtime, dict) else None
@@ -145,6 +148,8 @@ def load_deploy_config(path: Path, *, apply_runtime: bool = False) -> Args:
         raise ValueError("checkpoint must be a nonempty path")
     if type(server["port"]) is not int or not 0 < server["port"] < 65536:
         raise ValueError("port must be an integer in [1, 65535]")
+    if server["image_encoding"] not in ("jpeg", "raw"):
+        raise ValueError("image_encoding must be jpeg or raw")
     for field in ("warmup", "record", "rtc"):
         if type(server[field]) is not bool:
             raise ValueError(f"{field} must be boolean")

@@ -46,8 +46,8 @@ uv --version
 数据、模型缓存与 `runs/` 可按需另行同步。
 
 协议包的完整安装、更新、跨机器交付和一致性检查，统一以
-[`g2-policy-protocol/docs/guide.md`](../../../../g2-policy-protocol/docs/guide.md) 为准；
-本节只说明 OpenPI 如何接入。相邻源码布局、wheel 构建、SHA256 校验和旧 wheel 更新方式不要在这里重复维护。
+[`g2-policy-protocol/docs/install.md`](../../../../g2-policy-protocol/docs/install.md) 为准；
+本节只说明 OpenPI 如何接入。
 
 OpenPI 使用相邻源码时，两个仓库应位于同一父目录：
 
@@ -56,8 +56,8 @@ OpenPI 使用相邻源码时，两个仓库应位于同一父目录：
 ~/g2-policy-protocol/
 ```
 
-若不放协议源码，按协议安装教程构建并复制 wheel，然后在 OpenPI 根目录通过
-`G2_PROTOCOL_WHEELS` 指定 wheel 目录。
+bootstrap 以 editable 方式安装相邻协议源码，之后切换协议仓库的提交即生效。
+拿不到协议仓库时才用 wheel：在 OpenPI 根目录通过 `G2_PROTOCOL_WHEELS` 指定 wheel 目录。
 
 ## 4. 安装项目环境
 
@@ -76,7 +76,7 @@ G2_PROTOCOL_WHEELS="$HOME/g2-wheels" bash scripts/g2/bootstrap.sh
 ```
 
 bootstrap 调用 `uv sync --extra g2 --no-dev`，自动创建 `.venv`，安装第三方依赖，
-同时将 **OpenPI 和 openpi-client 本身**安装为 editable package。
+同时将 **OpenPI、openpi-client 和相邻的 g2-policy-protocol** 安装为 editable package。
 仅创建虚拟环境或安装第三方包还不够。
 
 不需要先 activate，也不需要额外执行 `pip install -e .`。
@@ -101,7 +101,7 @@ wheel 方式使用这些选项时同样加上 `G2_PROTOCOL_WHEELS`。
 默认不安装 ALOHA 仿真、TensorFlow/RLDS；OpenCV 使用 headless 版本。
 启动训练和服务不会自动补装依赖，代码更新涉及依赖变化时重新执行 bootstrap。
 
-协议包更新统一按[协议安装教程的更新和交付流程](../../../../g2-policy-protocol/docs/guide.md#更新和交付一致性)操作。
+协议包更新只需在 `../g2-policy-protocol` 执行 `git pull`；兼容性规则见[协议安装教程](../../../../g2-policy-protocol/docs/install.md#兼容性如何保证)。
 
 ## 5. 验证安装
 
@@ -125,7 +125,7 @@ uv pip check --python .venv/bin/python
 ```
 
 `OpenPI` 应指向本机 `~/openpi/src/openpi`。协议包另用这份 `.venv/bin/python` 执行
-[统一安装教程的验证命令](../../../../g2-policy-protocol/docs/guide.md#验证安装)，包括 `weight: auto` 功能检查。
+[统一安装教程的验证命令](../../../../g2-policy-protocol/docs/install.md#验证安装)。
 再验证 JAX 能使用 GPU 并完成一次计算：
 
 ```bash
@@ -165,7 +165,7 @@ Shell 入口将 Hugging Face 缓存设为 `~/.cache/openpi-hf`，数据默认放
 | `No module named 'openpi'` | 项目未安装到这份解释器，或复制的旧 `.venv` 内路径失效；在本机重新运行 bootstrap，再验证 `import openpi` |
 | 找不到 `../g2-policy-protocol` | 按第 3 节准备相邻源码，或使用 `G2_PROTOCOL_WHEELS`；不用同名 PyPI 包替代 |
 | 找不到 `openpi_client` 或 `g2_policy_protocol` | 检查 bootstrap 是否完成，以及使用的是否为仓库 `.venv/bin/python` |
-| `weight: auto` 报 `weight must be a finite positive number` | 安装的是旧协议实现；按[统一更新流程](../../../../g2-policy-protocol/docs/guide.md#更新和交付一致性)刷新协议包，保留 YAML 中的 `auto` |
+| `weight: auto` 报 `weight must be a finite positive number` | 安装的是旧协议实现；按[统一更新流程](../../../../g2-policy-protocol/docs/install.md#兼容性如何保证)刷新协议包，保留 YAML 中的 `auto` |
 | JAX 只有 CPU 或 CUDA 初始化失败 | 检查 `nvidia-smi`、`CUDA_VISIBLE_DEVICES` 和驱动兼容性；使用第 5 节 GPU 检查定位，dry-run 不能证明 GPU 可用 |
 | `Could not load libtorchcodec`、缺 `libavcodec` | 检查系统 FFmpeg 及共享库是否安装；不要随意升级锁定的 Torch/TorchCodec 组合 |
 | `cv2` 导入异常 | 重新执行 bootstrap；它会在移除普通 OpenCV 时重装 headless，修复共用文件 |

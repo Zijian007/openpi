@@ -53,7 +53,7 @@ def create_trained_policy(checkpoint_dir, **kwargs) -> G2Policy:
     checkpoint_dir = Path(download.maybe_download(str(checkpoint_dir)))
     snapshot = checkpoint_dir / "assets" / g2_config.CHECKPOINT_CONFIG
     if not snapshot.is_file():
-        raise ValueError("G2 serving requires a g2_train_config.yaml snapshot (schema_version: 8)")
+        raise ValueError("G2 serving requires the checkpoint assets/g2_train_config.yaml snapshot")
     payload = g2_config.read_yaml(snapshot)
     train_config = g2_config.build_train_config(
         g2_config.normalize_settings(payload["settings"]), tuple(payload["extra_args"])

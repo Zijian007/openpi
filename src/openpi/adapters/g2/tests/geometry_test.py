@@ -1,8 +1,8 @@
 import copy
 
 from g2_policy_protocol.data.encoding import ActionCodec
-from g2_policy_protocol.data.encoding import matrix_pose
-from g2_policy_protocol.data.encoding import pose_matrix
+from g2_policy_protocol.data.geometry import matrix_to_pose
+from g2_policy_protocol.data.geometry import pose_to_matrix
 from g2_policy_protocol.validation import validate_rigid_transform
 import numpy as np
 import pytest
@@ -49,7 +49,7 @@ def poses(seed, count=None):
             Rotation.random(1 if count is None else count, random_state=rng).as_matrix().reshape(*shape, 3, 3)
         )
         t[..., :3, 3] = rng.normal(size=(*shape, 3))
-        parts.append(matrix_pose(t, rng.uniform(size=shape)))
+        parts.append(matrix_to_pose(t, rng.uniform(size=shape)))
     return np.concatenate(parts, axis=-1)
 
 
@@ -64,8 +64,8 @@ def test_noncommuting_pose_codec_round_trip(rotation, representation, scope, arm
     coordinates = policy["action"]["pose"]["coordinates"]
     coordinates["rotation"] = rotation
     # Include nontrivial tool and parent transforms; identity-only tests miss multiplication-order bugs.
-    parent = pose_matrix(poses(13)[:10])
-    tools = {side: pose_matrix(poses(seed)[:10]).tolist() for side, seed in (("left", 14), ("right", 15))}
+    parent = pose_to_matrix(poses(13)[:10])
+    tools = {side: pose_to_matrix(poses(seed)[:10]).tolist() for side, seed in (("left", 14), ("right", 15))}
     coordinates.update(parent_frame="arm_base_link", flange_to_tcp=tools)
     set_encoding(
         policy["action"]["pose"],
@@ -87,7 +87,7 @@ def test_noncommuting_pose_codec_round_trip(rotation, representation, scope, arm
 
 
 def test_se3_and_component_use_distinct_frames():
-    pose = matrix_pose(np.eye(4), 0.3)
+    pose = matrix_to_pose(np.eye(4), 0.3)
     reference = pose.copy()
     reference[3:9] = [0, 1, 0, -1, 0, 0]  # +90 degrees around Z.
     target = reference.copy()
@@ -123,7 +123,7 @@ def test_reference_is_explicit_and_required(source, key):
 def test_dynamic_parent_frame_matches_calibration_and_round_trips():
     policy = copy.deepcopy(POLICY_DEFAULTS)
     policy["action"]["pose"]["coordinates"]["parent_frame"] = "arm_base_link"
-    obs = {"observation/pose": poses(1), "observation/base_to_parent": pose_matrix(poses(2)[:10])}
+    obs = {"observation/pose": poses(1), "observation/base_to_parent": pose_to_matrix(poses(2)[:10])}
     absolute = poses(3, 3)
     codec = ActionCodec(policy)
     np.testing.assert_allclose(codec.decode(codec.encode(absolute, obs), obs), absolute, atol=2e-6)
@@ -139,7 +139,7 @@ def test_tcp_offset_applies_to_robot_state_and_action_references():
         ee_frame="tcp", flange_to_tcp={"left": tool.tolist(), "right": tool.tolist()}
     )
     set_encoding(policy["action"]["pose"], "se3_body_delta", scope="chunk")
-    origin = np.tile(matrix_pose(np.eye(4), 0.5), 2)
+    origin = np.tile(matrix_to_pose(np.eye(4), 0.5), 2)
     obs = {"observation/pose": origin}
     codec = ActionCodec(policy)
     delta = codec.encode(origin[None], obs)

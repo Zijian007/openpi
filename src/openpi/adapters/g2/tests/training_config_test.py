@@ -13,8 +13,6 @@ from openpi.adapters.g2.training_config import to_native
 @pytest.fixture
 def source():
     return {
-        "schema_version": 8,
-        "backend": "openpi",
         "experiment": {"name": "test", "arm": "right"},
         "data": {"root": "data", "repo_id": "org/task", "cameras": None},
         "policy": {"timing": {"action_horizon": 50}},
@@ -42,20 +40,19 @@ def test_openpi_snapshot_round_trips_all_training_settings(source):
     assert native["training"]["peak_lr"] == 2.5e-5
     assert native["checkpoints"]["resume"] is False
     assert native["model"]["params_path"] == "base"
-    assert openpi_snapshot(native)["schema_version"] == 8
+    assert "schema_version" not in openpi_snapshot(native)
     assert to_native(openpi_snapshot(native)) == native
 
 
-@pytest.mark.parametrize("version", [None, 5, 6, 7, 9, 7.0, 8.0, "7", "8", True])
-def test_unsupported_training_version_is_rejected(source, version):
-    source["schema_version"] = version
-    with pytest.raises(ValueError, match="schema_version: 8"):
-        to_native(source)
+def test_legacy_snapshot_fields_are_dropped(source):
+    # Checkpoint snapshots written before the version fields were removed still load.
+    assert to_native({**source, "schema_version": 8, "backend": "openpi"}) == to_native(source)
 
 
-def test_other_backend_is_rejected(source):
-    source["backend"] = "lerobot"
-    with pytest.raises(ValueError, match="backend must be openpi"):
+@pytest.mark.parametrize(("key", "value"), [("schema_version", 7), ("schema_version", "8"), ("backend", "lerobot")])
+def test_other_legacy_values_are_rejected(source, key, value):
+    source[key] = value
+    with pytest.raises(ValueError, match="Unsupported legacy config"):
         to_native(source)
 
 

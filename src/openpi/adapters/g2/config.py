@@ -87,7 +87,6 @@ POLICY_DEFAULTS = policy_config.resolve_policy(
 )
 
 SCHEMA = {
-    "schema_version": None,
     "experiment": {"name", "arm"},
     "finetuning": {
         module: {"mode": None, "lora": {"rank", "alpha", "targets", "rslora"}}
@@ -305,8 +304,6 @@ def validate_settings(settings: dict[str, Any]) -> None:
     size = image_size(settings["data"])
     if size is not None and size != (224, 224):
         raise ValueError("OpenPI Pi05 requires data.image_size: [224, 224]")
-    if settings["schema_version"] != training_schema.VERSION:
-        raise ValueError(f"Native training configs require schema_version: {training_schema.VERSION}")
     policy_config.validate_policy(settings["policy"])
     if state_dimension(settings) > 32 and not settings["model"]["discrete_state_input"]:
         raise ValueError("Combined/history states wider than 32 require discrete_state_input: true")
