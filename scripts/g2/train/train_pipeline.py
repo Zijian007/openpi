@@ -25,6 +25,7 @@ import yaml
 
 from openpi.adapters.g2 import config as g2_config
 from openpi.adapters.g2.training_config import to_native
+from openpi.adapters.g2.wandb_logging import install as install_g2_wandb
 from openpi.shared.wandb_preflight import check_wandb
 
 PROJECT_ROOT = g2_config.PROJECT_ROOT
@@ -225,6 +226,7 @@ def _run_stage(stage: str, snapshot: Path):
     else:
         from train import main as train_main
 
+        install_g2_wandb(config)
         try:
             train_main(config)
         finally:
